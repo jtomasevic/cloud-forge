@@ -1,0 +1,9 @@
+defaultBaseImage: gcr.io/distroless/static:nonroot
+
+# Build for both amd64 and arm64 in CI; local builds default to host platform
+# Override with: KO_DEFAULTPLATFORMS=linux/amd64 ko build ...
+# defaultPlatforms: linux/amd64,linux/arm64
+
+# Add standard OCI labels to every image built with ko
+labels:
+  org.opencontainers.image.source: https://github.com/jtomasevic/cloud-forge
