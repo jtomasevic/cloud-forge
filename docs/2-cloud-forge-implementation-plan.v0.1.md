@@ -220,11 +220,11 @@ Phase 9 is not a single milestone but a continuous hardening and capability-expa
 #### Task 0.2 — CI/CD Pipeline
 
 - **Purpose:** Automated build, lint, test, and container image build for all CloudForge services.
-- **Scope:** GitHub Actions (or Gitea Actions for self-hosted CI) workflows for: lint → unit test → build → image push. Per-service image build using multi-stage Dockerfiles.
+- **Scope:** GitHub Actions workflows for: lint → unit test → build → image push. Per-service image build using multi-stage Dockerfiles.
 - **Key deliverables:**
   - CI workflow files
   - Multi-stage Dockerfiles for each service using `gcr.io/distroless/static` base image
-  - Container registry configuration (GitHub Container Registry or Harbor for self-hosted)
+  - Container registry configuration (GitHub Container Registry `ghcr.io/cloud-forge/<service>`)
   - Version tagging strategy (semver + git SHA for pre-release)
 - **Dependencies:** Task 0.1
 - **Type:** Infrastructure + operational tooling
