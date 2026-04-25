@@ -1,0 +1,55 @@
+# Multi-stage Dockerfile template for CloudForge services.
+#
+# Build a specific service:
+#   docker build --build-arg SERVICE_NAME=cf-iam -t cf-iam .
+#
+# All services use the same template — only SERVICE_NAME differs.
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM golang:1.26-alpine AS builder
+
+# Install git for go modules that require VCS stamping
+RUN apk add --no-cache git
+
+WORKDIR /src
+
+# Copy workspace and module files first to leverage Docker layer cache
+COPY go.work go.work.sum* ./
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the full source tree
+COPY . .
+
+# SERVICE_NAME must match a directory under cmd/
+ARG SERVICE_NAME
+RUN test -n "${SERVICE_NAME}" || (echo "ERROR: SERVICE_NAME build arg is required" && exit 1)
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build \
+      -trimpath \
+      -ldflags="-s -w \
+        -X main.version=${VERSION:-dev} \
+        -X main.commit=${COMMIT:-unknown} \
+        -X main.date=${BUILD_DATE:-unknown}" \
+      -o /bin/service \
+      ./cmd/${SERVICE_NAME}
+
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM gcr.io/distroless/static:nonroot
+
+COPY --from=builder /bin/service /service
+
+# Standard OCI labels — values injected at build time by CI
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+ARG SERVICE_NAME=unknown
+
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.title="cloudforge-${SERVICE_NAME}"
+LABEL org.opencontainers.image.source="https://github.com/jtomasevic/cloud-forge"
+
+ENTRYPOINT ["/service"]

@@ -182,7 +182,7 @@ This task depends on Task 0.1 (the repo structure must exist). It defines the CI
 ### Inputs / Prerequisites
 - Task 0.1 complete (repo structure and Go module exist)
 - GitHub repository with GitHub Actions enabled
-- Container registry: GitHub Container Registry (`ghcr.io/cloud-forge/<service>`)
+- Container registry: GitHub Container Registry (`ghcr.io/jtomasevic/cloud-forge/<service>`)
 
 ### Outputs / Deliverables
 
@@ -240,7 +240,7 @@ ENTRYPOINT ["/service"]
    - Cache: `~/.cache/golangci-lint` and Go module cache
 2. Create `.github/workflows/release.yml`:
    - Trigger: `push` to `main` and `push` to `tags: v*`
-   - Jobs: build images via `ko` and push to `ghcr.io/cloud-forge/`
+   - Jobs: build images via `ko` and push to `ghcr.io/jtomasevic/cloud-forge/`
 3. Create `deploy/docker/Dockerfile.service` with the multi-stage pattern above
 4. Create `.ko.yaml` with `defaultBaseImage: gcr.io/distroless/static:nonroot`
 5. Add `image:build` and `image:push` Taskfile targets wrapping `ko build`
