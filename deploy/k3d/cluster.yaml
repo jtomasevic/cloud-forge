@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/k3d-io/k3d/main/pkg/config/v1alpha5/schema.json
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: cloudforge-dev
+
+# 1 control-plane + 2 worker nodes
+servers: 1
+agents: 2
+
+image: rancher/k3s:v1.31.4-k3s1
+
+ports:
+  # HTTP ingress (APISIX / Contour)
+  - port: "9080:80"
+    nodeFilters: ["loadbalancer"]
+  # HTTPS ingress
+  - port: "8443:443"
+    nodeFilters: ["loadbalancer"]
+  # NATS client port (exposed for local tooling)
+  - port: "4222:4222"
+    nodeFilters: ["server:0"]
+
+options:
+  k3s:
+    extraArgs:
+      # CloudForge uses Contour for ingress — disable the default Traefik
+      - arg: "--disable=traefik"
+        nodeFilters: ["server:*"]
+      # Disable the default local-path-provisioner (we manage storage classes ourselves)
+      # Comment out if you want the default storage class for quick experiments
+      # - arg: "--disable=local-storage"
+      #   nodeFilters: ["server:*"]
+  kubeconfig:
+    updateDefaultKubeconfig: false   # we write our own kubeconfig to .dev/
+    switchCurrentContext: false
+
+# registries: (uncomment to add a pull-through cache for gcr.io or other registries)
+#   config: |
+#     mirrors:
+#       "gcr.io":
+#         endpoint:
+#           - "http://localhost:5000"

@@ -1,0 +1,80 @@
+# All CloudForge platform namespaces.
+# Applied by: kubectl apply -f deploy/kustomize/base/namespaces.yaml
+# Or via kustomize: kubectl apply -k deploy/kustomize/base/
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-system
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: system
+  annotations:
+    cloudforge.io/description: "Core platform services — IAM, SecretsConfig, ResourceController"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-identity
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: identity
+  annotations:
+    cloudforge.io/description: "Identity provider — Keycloak, OPA"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-data
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: data
+  annotations:
+    cloudforge.io/description: "Data layer — CloudNativePG, ScyllaDB, MinIO"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-events
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: events
+  annotations:
+    cloudforge.io/description: "Eventing backbone — NATS JetStream, CF-EventRouter"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-compute
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: compute
+  annotations:
+    cloudforge.io/description: "Compute layer — Knative, KServe, vLLM, Ollama"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-observability
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: observability
+  annotations:
+    cloudforge.io/description: "Observability stack — OTel Collector, Prometheus, Grafana, OpenSearch"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-gateway
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: gateway
+  annotations:
+    cloudforge.io/description: "API gateway — Apache APISIX, Contour, cert-manager"

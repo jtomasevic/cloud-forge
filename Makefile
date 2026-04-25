@@ -19,10 +19,14 @@ help: ## Show this help message
 
 ##@ Dev Cluster
 
+.PHONY: tools-check
+tools-check: ## Verify required dev tools are installed; install missing ones via Homebrew (macOS)
+	@bash scripts/tools-check.sh
+
 .PHONY: dev-up
-dev-up: ## Start local k3d cluster and bootstrap base infrastructure
+dev-up: tools-check ## Start local k3d cluster and bootstrap base infrastructure
 	k3d cluster create --config deploy/k3d/cluster.yaml
-	kubectl apply -f deploy/kustomize/base/namespaces.yaml
+	kubectl apply -k deploy/kustomize/base/
 	bash scripts/dev-bootstrap.sh
 
 .PHONY: dev-down
