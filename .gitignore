@@ -29,5 +29,5 @@ go.work.sum
 /specs/**.*
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
