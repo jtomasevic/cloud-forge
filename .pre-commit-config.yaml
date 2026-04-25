@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+        name: go fmt
+      - id: go-vet
+        name: go vet
+        args: ["./..."]
+      - id: go-build
+        name: go build
+        args: ["./..."]
+      - id: go-unit-tests
+        name: go test (unit)
+        args: ["-short", "-count=1", "./..."]
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v2.1.6
+    hooks:
+      - id: golangci-lint
+        name: golangci-lint
+        args: ["--config=.golangci.yml"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ["--unsafe"]  # allow custom YAML tags (e.g. Helm)
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: ["--branch=main"]

@@ -1,0 +1,139 @@
+version: "3"
+
+vars:
+  MODULE: github.com/jtomasevic/cloud-forge
+  REGISTRY: ghcr.io/jtomasevic/cloud-forge
+
+tasks:
+
+  # ── Dev cluster lifecycle ────────────────────────────────────────────────────
+
+  dev:up:
+    desc: Start local k3d cluster and bootstrap base infrastructure
+    cmds:
+      - k3d cluster create --config deploy/k3d/cluster.yaml
+      - kubectl apply -f deploy/kustomize/base/namespaces.yaml
+      - bash scripts/dev-bootstrap.sh
+
+  dev:down:
+    desc: Stop and delete local k3d cluster
+    cmds:
+      - k3d cluster delete cloudforge-dev
+
+  dev:reset:
+    desc: Destroy and recreate local cluster from scratch
+    cmds:
+      - task: dev:down
+      - task: dev:up
+
+  dev:status:
+    desc: Show cluster node and pod status
+    cmds:
+      - k3d cluster list
+      - kubectl get pods -A
+
+  # ── Component deployment ─────────────────────────────────────────────────────
+
+  deploy:component:
+    desc: "Deploy a named CloudForge component. Usage: task deploy:component -- cf-iam"
+    cmds:
+      - helm upgrade --install {{.CLI_ARGS}} deploy/helm/components/{{.CLI_ARGS}} -n cf-system --create-namespace
+
+  # ── Code generation ──────────────────────────────────────────────────────────
+
+  gen:api:
+    desc: "Generate server stubs and client SDK from OpenAPI spec. Usage: task gen:api -- storage"
+    cmds:
+      - oapi-codegen --config api/{{.CLI_ARGS}}/v1/oapi-server.cfg.yaml api/{{.CLI_ARGS}}/v1/openapi.yaml
+      - oapi-codegen --config api/{{.CLI_ARGS}}/v1/oapi-client.cfg.yaml api/{{.CLI_ARGS}}/v1/openapi.yaml
+
+  gen:all:
+    desc: Regenerate all OpenAPI server stubs and client SDKs
+    cmds:
+      - for: [ai, database, events, functions, gateway, iam, observability, resource, secrets, storage]
+        cmd: task gen:api -- {{.ITEM}}
+
+  # ── Testing ──────────────────────────────────────────────────────────────────
+
+  test:unit:
+    desc: Run unit tests (excludes integration tests)
+    cmds:
+      - go test -short -race -count=1 ./...
+
+  test:integration:
+    desc: Run integration tests (requires Docker for testcontainers)
+    cmds:
+      - go test -tags=integration -race -count=1 -timeout=120s ./...
+
+  test:all:
+    desc: Run all tests
+    cmds:
+      - task: test:unit
+      - task: test:integration
+
+  test:coverage:
+    desc: Run unit tests with coverage report
+    cmds:
+      - go test -short -race -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo "Coverage report written to coverage.html"
+
+  # ── Linting and formatting ───────────────────────────────────────────────────
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  lint:fix:
+    desc: Run golangci-lint with auto-fix
+    cmds:
+      - golangci-lint run --fix ./...
+
+  fmt:
+    desc: Format all Go files
+    cmds:
+      - goimports -w -local {{.MODULE}} .
+      - gofmt -w .
+
+  # ── Build ────────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build all CloudForge binaries to ./bin/
+    cmds:
+      - mkdir -p bin
+      - for: [cf, cf-install, cf-iam, cf-secrets, cf-resource, cf-events, cf-functions, cf-db, cf-gateway, cf-observe, cf-ai]
+        cmd: go build -trimpath -ldflags="-s -w" -o bin/{{.ITEM}} ./cmd/{{.ITEM}}
+
+  build:service:
+    desc: "Build a single service binary. Usage: task build:service -- cf-iam"
+    cmds:
+      - mkdir -p bin
+      - go build -trimpath -ldflags="-s -w" -o bin/{{.CLI_ARGS}} ./cmd/{{.CLI_ARGS}}
+
+  # ── Container images ─────────────────────────────────────────────────────────
+
+  image:build:
+    desc: "Build a container image for a service using ko. Usage: task image:build -- cf-iam"
+    cmds:
+      - ko build --local ./cmd/{{.CLI_ARGS}}
+
+  image:push:
+    desc: "Build and push a container image. Usage: task image:push -- cf-iam"
+    env:
+      KO_DOCKER_REPO: "{{.REGISTRY}}"
+    cmds:
+      - ko build ./cmd/{{.CLI_ARGS}}
+
+  # ── Utilities ────────────────────────────────────────────────────────────────
+
+  tidy:
+    desc: Run go mod tidy across the workspace
+    cmds:
+      - go work sync
+      - go mod tidy
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf bin/ coverage.out coverage.html dist/

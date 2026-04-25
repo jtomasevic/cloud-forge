@@ -1,0 +1,95 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+issues:
+  max-same-issues: 10
+  fix: false
+
+formatters:
+  enable:
+    - goimports
+    - gofmt
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/jtomasevic/cloud-forge
+
+linters:
+  enable:
+    - errcheck       # all returned errors must be checked
+    - govet          # standard go vet checks
+    - staticcheck    # SA family + gosimple + stylecheck (merged in v2)
+    - gosec          # security checks
+    - revive         # idiomatic Go style
+    - unused         # no dead/unused code
+    - bodyclose      # HTTP response bodies must be closed
+    - noctx          # HTTP requests must use context
+    - contextcheck   # context propagation checks
+    - exhaustive     # exhaustive switch statements on enums
+    - gocritic       # opinionated Go style checks
+    - godot          # comments should end with a period
+    - misspell       # common spelling mistakes
+    - prealloc       # slice pre-allocation
+    - unconvert      # unnecessary type conversions
+    - unparam        # unused function parameters
+
+  settings:
+    govet:
+      enable-all: true
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+            - "sayRepetitiveInsteadOfStutters"
+        - name: var-naming
+        - name: unused-parameter
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+
+    gosec:
+      excludes:
+        - G115   # integer overflow in conversions (noisy on generated code)
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+
+  exclusions:
+    rules:
+      # doc.go placeholder files — no exported symbols yet
+      - path: "doc\\.go$"
+        linters:
+          - revive
+          - unused
+      # main.go stubs — empty main is expected until implemented
+      - path: "cmd/.*/main\\.go$"
+        linters:
+          - revive
+          - unused
+          - deadcode
+      # generated code
+      - path: "\\.gen\\.go$"
+        linters:
+          - errcheck
+          - govet
+          - revive
+          - gocritic
+          - godot
+      # test files — relax some rules
+      - path: "_test\\.go$"
+        linters:
+          - gosec
+          - unparam
+          - godot
