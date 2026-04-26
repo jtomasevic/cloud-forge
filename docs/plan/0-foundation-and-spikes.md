@@ -365,6 +365,7 @@ tasks:
 4. Add `dev:up`, `dev:down`, `dev:reset`, `dev:status`, `deploy:component` to `Taskfile.yml`
 5. Write `scripts/dev-bootstrap.sh` using `openssl` for cert generation and `kubectl create secret` for storage
 6. Create `docs/local-dev.md` with prerequisites, setup steps, troubleshooting
+7. Summarizy all important commands in Makefile. Create command which check if necessary tools are installed like k3d, kubectl etc, and install them if they are not. In Makefile call this command before starting cluster.
 
 ---
 

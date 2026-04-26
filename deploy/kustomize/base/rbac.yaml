@@ -1,0 +1,190 @@
+# Default service accounts and resource quotas for each CloudForge namespace.
+# These are created alongside namespaces and provide baseline RBAC posture.
+#
+# Each namespace gets:
+#   - A dedicated ServiceAccount (cf-<component>) with standard labels
+#   - A ResourceQuota limiting runaway resource consumption in dev
+#   - A LimitRange setting default container resource requests/limits
+
+# ── cf-system ─────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-system
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: system
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-system-quota
+  namespace: cf-system
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
+    pods: "20"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cf-system-limits
+  namespace: cf-system
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 250m
+        memory: 256Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+
+# ── cf-identity ───────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-identity
+  namespace: cf-identity
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: identity
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-identity-quota
+  namespace: cf-identity
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "10"
+
+# ── cf-data ───────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-data
+  namespace: cf-data
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: data
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-data-quota
+  namespace: cf-data
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "20"
+
+# ── cf-events ─────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-events
+  namespace: cf-events
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: events
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-events-quota
+  namespace: cf-events
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "10"
+
+# ── cf-compute ────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-compute
+  namespace: cf-compute
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: compute
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-compute-quota
+  namespace: cf-compute
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    pods: "30"
+
+# ── cf-observability ──────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-observability
+  namespace: cf-observability
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: observability
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-observability-quota
+  namespace: cf-observability
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "20"
+
+# ── cf-gateway ────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cf-gateway
+  namespace: cf-gateway
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: gateway
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cf-gateway-quota
+  namespace: cf-gateway
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "10"
