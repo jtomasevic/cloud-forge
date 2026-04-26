@@ -88,7 +88,8 @@ test-all: test-unit test-integration ## Run unit and integration tests
 .PHONY: test-coverage
 test-coverage: ## Run unit tests with per-package and per-function coverage report
 	@echo "Running tests with coverage across all packages..."
-	go test -short -race -coverprofile=coverage.out -covermode=atomic ./...
+	go test -short -race -coverprofile=coverage.out -covermode=atomic \
+		$(shell go list ./... | grep -v '/mocks' | grep -v 'internal/testutil')
 	@echo ""
 	@echo "── Per-package coverage ────────────────────────────────────────────"
 	@go tool cover -func=coverage.out | grep -E "^github|^total" | \

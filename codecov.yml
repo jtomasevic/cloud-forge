@@ -42,3 +42,4 @@ ignore:
   - "**/mocks/**"
   - "vendor/**"
   - "**/*.pb.go"
+  - "internal/testutil/**"
