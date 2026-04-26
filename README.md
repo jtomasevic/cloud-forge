@@ -23,14 +23,108 @@ It provides identity, secrets management, API gateway, object storage, managed d
 
 ## Requirements
 
-| Tool | Min version |
+| Tool | Min version | Purpose |
+|---|---|---|
+| Go | 1.26+ | Primary language |
+| Docker Desktop (or Colima) | 24.x | Container runtime for local cluster and integration tests |
+| k3d | 5.7+ | Kubernetes-in-Docker for local dev cluster |
+| kubectl | 1.29+ | Cluster management |
+| Helm | 3.14+ | Kubernetes package manager |
+| Task | 3.x | Task runner (`Taskfile.yml`) |
+| golangci-lint | 2.x | Go linter (matches CI) |
+
+On macOS with Homebrew, `make tools-check` installs any missing tools automatically.
+
+## Testing prerequisites
+
+The project uses two testing tiers:
+
+**Unit tests** — no external dependencies; run entirely in-process:
+
+```bash
+# Install all Go test dependencies (one-time, after cloning)
+go mod download
+
+# Optional: install the mock generator (only needed when adding new mocks)
+go install go.uber.org/mock/mockgen@latest
+```
+
+**Integration tests** — spin up real services in Docker via [testcontainers-go](https://testcontainers.com/):
+
+```bash
+# Docker must be running
+docker info
+
+# The following images are pulled automatically on first run:
+#   postgres:16-alpine   (internal/testutil.NewPostgresContainer)
+#   nats:2-alpine        (internal/testutil.NewNATSContainer)
+#   minio/minio          (internal/testutil.NewMinIOContainer)
+#   openbao/openbao      (internal/testutil.NewOpenBaoContainer)
+#   openpolicyagent/opa  (internal/testutil.NewOPAContainer)
+make test-integration
+```
+
+> Integration tests are tagged `//go:build integration` and are skipped by `make test-unit`.
+
+## Formatting and linting
+
+The project enforces consistent formatting and zero linter warnings on every pull request. All rules mirror the CI configuration in `.github/workflows/ci.yml` and are configured in `.golangci.yml`.
+
+### Commands
+
+| Command | What it does |
 |---|---|
-| Go | 1.26+ |
-| Docker Desktop (or Colima) | 24.x |
-| k3d | 5.7+ |
-| kubectl | 1.29+ |
-| Helm | 3.14+ |
-| Task | 3.x |
+| `make fmt` | Format all Go files with `gofmt` and `goimports` |
+| `make lint` | Run `golangci-lint` with the project config (same as CI) |
+| `make lint-fix` | Run `golangci-lint --fix` to auto-fix fixable issues |
+| `make vet` | Run `go vet` only |
+| `make check` | Run `fmt` + `vet` + `lint` in sequence |
+
+```bash
+# Quick check before pushing
+make check
+
+# Auto-fix what golangci-lint can fix, then review the rest
+make lint-fix
+make lint
+
+# Format only
+make fmt
+```
+
+### Linters enabled (`.golangci.yml`)
+
+The notable linters active on this project:
+
+| Linter | What it catches |
+|---|---|
+| `govet` | Suspicious constructs including struct field alignment |
+| `gocritic` | Code style issues (octal literals, huge value parameters, …) |
+| `revive` | Exported symbol documentation, unused parameters |
+| `gofmt` / `goimports` | Formatting and import ordering |
+| `gosec` | Security anti-patterns (file inclusion, path traversal) |
+| `noctx` | HTTP requests created without a `context.Context` |
+| `contextcheck` | Context propagation in goroutines and closures |
+| `exhaustive` | Missing cases in `switch` statements over enums |
+
+Run `golangci-lint linters` to see the full list.
+
+### Pre-commit hooks
+
+The project ships a `.pre-commit-config.yaml` that runs `gofmt` and `golangci-lint` automatically before every commit. To enable:
+
+```bash
+# Install the pre-commit framework (one-time)
+pip install pre-commit       # or: brew install pre-commit
+
+# Install the hooks into this repo (one-time per clone)
+pre-commit install
+
+# Run manually against all files
+pre-commit run --all-files
+```
+
+Once installed, `git commit` will fail fast if there are format or lint errors, preventing them from ever reaching CI.
 
 ## Local development setup
 
@@ -65,10 +159,15 @@ make dev-reset          # Full reset (destroy + recreate)
 make dev-status         # Show cluster and pod status
 
 make build              # Build all service binaries to ./bin/
-make test-unit          # Run unit tests
+make test-unit          # Run unit tests (no Docker required)
 make test-integration   # Run integration tests (requires Docker)
-make lint               # Run golangci-lint
-make check              # fmt + vet + lint
+make test-coverage      # Run unit tests with HTML coverage report
+
+make fmt                # Format all Go files
+make lint               # Run golangci-lint (same config as CI)
+make lint-fix           # Auto-fix lint issues where possible
+make vet                # Run go vet
+make check              # fmt + vet + lint in sequence
 
 make gen-api SERVICE=storage   # Regenerate OpenAPI stubs for a service
 make gen-all                   # Regenerate all service stubs
