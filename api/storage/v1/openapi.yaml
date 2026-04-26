@@ -1,0 +1,364 @@
+openapi: "3.0.3"
+
+info:
+  title: CloudForge Storage API
+  description: |
+    S3-compatible object storage for CloudForge tenants.
+
+    Every path is scoped to a `{tenant}/{project}` pair that the platform's
+    TenantContext middleware has already validated and stored in the request
+    context before the handler is called.  Callers must hold a valid
+    `storage:read` or `storage:write` IAM permission for the targeted project.
+  version: "0.1.0"
+  contact:
+    name: CloudForge Platform Team
+    url: https://github.com/jtomasevic/cloud-forge
+
+servers:
+  - url: /storage/v1
+    description: CloudForge Storage API (all versions are path-prefixed)
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: CloudForge IAM JWT issued by CF-Identity.
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # ── Bucket ───────────────────────────────────────────────────────────────
+    Bucket:
+      type: object
+      description: Metadata for a single CloudForge storage bucket.
+      required:
+        - name
+        - tenant
+        - project
+        - createdAt
+      properties:
+        name:
+          type: string
+          description: Bucket name, unique within a project. Must match [a-z0-9][a-z0-9\-]{1,61}[a-z0-9].
+          minLength: 3
+          maxLength: 63
+          pattern: "^[a-z0-9][a-z0-9\\-]{1,61}[a-z0-9]$"
+          example: "ml-artifacts"
+        tenant:
+          type: string
+          description: Tenant slug that owns this bucket.
+          example: "acme"
+        project:
+          type: string
+          description: Project slug within the tenant.
+          example: "my-project"
+        region:
+          type: string
+          description: Storage region. Defaults to the platform default region when omitted.
+          example: "us-east-1"
+        versioning:
+          type: boolean
+          description: Whether S3 object versioning is enabled on this bucket.
+          default: false
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp at which the bucket was created.
+          example: "2026-04-01T12:00:00Z"
+
+    # ── CreateBucketRequest ───────────────────────────────────────────────────
+    CreateBucketRequest:
+      type: object
+      description: Request body for creating a new bucket.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Desired bucket name. Must be unique within the project.
+          minLength: 3
+          maxLength: 63
+          pattern: "^[a-z0-9][a-z0-9\\-]{1,61}[a-z0-9]$"
+          example: "ml-artifacts"
+        region:
+          type: string
+          description: Target storage region. Defaults to the platform default when omitted.
+          example: "us-east-1"
+        versioning:
+          type: boolean
+          description: Enable S3 object versioning on this bucket.
+          default: false
+
+    # ── BucketList ────────────────────────────────────────────────────────────
+    BucketList:
+      type: object
+      description: Paginated list of buckets for a project.
+      required:
+        - items
+        - total
+      properties:
+        items:
+          type: array
+          description: Buckets in the current page.
+          items:
+            $ref: "#/components/schemas/Bucket"
+        total:
+          type: integer
+          description: Total number of buckets in the project (across all pages).
+          minimum: 0
+          example: 3
+
+    # ── ErrorDetail ───────────────────────────────────────────────────────────
+    # Mirrors internal/errors.errorDetail so OpenAPI consumers get the same
+    # JSON shape that WriteJSON produces.
+    ErrorDetail:
+      type: object
+      description: Machine-readable error payload returned on all non-2xx responses.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: |
+            Machine-readable ALL_CAPS_SNAKE_CASE error code.  Consumers must
+            branch on this field, never on the human-readable message.
+          example: "RESOURCE_NOT_FOUND"
+          enum:
+            - RESOURCE_NOT_FOUND
+            - BAD_REQUEST
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - CONFLICT
+            - INTERNAL_ERROR
+        message:
+          type: string
+          description: Human-readable explanation of what went wrong.
+          example: "bucket \"ml-artifacts\" not found"
+        request_id:
+          type: string
+          description: |
+            Correlation ID from the X-Request-ID response header.  Present
+            when the RequestID middleware has run; omitted otherwise.
+          example: "01HX5Z4N3V7QWMPXBCDE6GH892"
+
+    # ── ErrorResponse ─────────────────────────────────────────────────────────
+    # Top-level envelope. Mirrors internal/errors.errorResponse.
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+
+  # -------------------------------------------------------------------------
+  # Reusable response definitions
+  # -------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: The request body or path parameters failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid authentication token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: The caller's IAM policy does not permit this action.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: A resource with the same identifier already exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: An unexpected server-side error occurred.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  # -------------------------------------------------------------------------
+  # Reusable path parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    TenantParam:
+      name: tenant
+      in: path
+      required: true
+      description: Tenant slug, injected by the TenantContext middleware.
+      schema:
+        type: string
+        minLength: 1
+        example: "acme"
+    ProjectParam:
+      name: project
+      in: path
+      required: true
+      description: Project slug within the tenant.
+      schema:
+        type: string
+        minLength: 1
+        example: "my-project"
+    BucketNameParam:
+      name: name
+      in: path
+      required: true
+      description: Bucket name to operate on.
+      schema:
+        type: string
+        minLength: 3
+        maxLength: 63
+        pattern: "^[a-z0-9][a-z0-9\\-]{1,61}[a-z0-9]$"
+        example: "ml-artifacts"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ── /storage/v1/{tenant}/{project}/buckets ──────────────────────────────
+  /{tenant}/{project}/buckets:
+    parameters:
+      - $ref: "#/components/parameters/TenantParam"
+      - $ref: "#/components/parameters/ProjectParam"
+
+    # ── POST — create bucket ───────────────────────────────────────────────
+    post:
+      operationId: createBucket
+      summary: Create a bucket
+      description: |
+        Creates a new S3-compatible bucket in the given project.
+        The caller must hold the `storage:write` permission.
+      tags:
+        - Buckets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBucketRequest"
+      responses:
+        "201":
+          description: Bucket created successfully.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: URL of the newly created bucket resource.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bucket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    # ── GET — list buckets ─────────────────────────────────────────────────
+    get:
+      operationId: listBuckets
+      summary: List buckets
+      description: |
+        Returns all buckets for the given project.
+        The caller must hold the `storage:read` permission.
+      tags:
+        - Buckets
+      responses:
+        "200":
+          description: Bucket list returned successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BucketList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── /storage/v1/{tenant}/{project}/buckets/{name} ───────────────────────
+  /{tenant}/{project}/buckets/{name}:
+    parameters:
+      - $ref: "#/components/parameters/TenantParam"
+      - $ref: "#/components/parameters/ProjectParam"
+      - $ref: "#/components/parameters/BucketNameParam"
+
+    # ── GET — get bucket ───────────────────────────────────────────────────
+    get:
+      operationId: getBucket
+      summary: Get a bucket
+      description: |
+        Returns metadata for a single bucket by name.
+        The caller must hold the `storage:read` permission.
+      tags:
+        - Buckets
+      responses:
+        "200":
+          description: Bucket found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bucket"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    # ── DELETE — delete bucket ─────────────────────────────────────────────
+    delete:
+      operationId: deleteBucket
+      summary: Delete a bucket
+      description: |
+        Permanently deletes a bucket and all its contents.
+        The caller must hold the `storage:write` permission.
+        Returns 404 if the bucket does not exist.
+      tags:
+        - Buckets
+      responses:
+        "204":
+          description: Bucket deleted successfully (no content).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"

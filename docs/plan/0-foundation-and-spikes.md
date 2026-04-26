@@ -599,25 +599,40 @@ github.com/openbao/openbao/api/v2
 ## Task 0.5 — OpenAPI-First API Scaffolding
 
 ### Goal
-Establish the API-first development pattern. Every CloudForge REST API is defined in an OpenAPI 3.1 spec first, and server stubs + client SDKs are generated from it. Validate the entire toolchain end-to-end with one sample service before any real service is built.
+Establish the API-first development pattern. Every CloudForge REST API is defined in an OpenAPI 3.1
+spec first, and server stubs + client SDKs are generated from it. The generated server code must use
+the **standard library `net/http` router** (Go 1.22+ pattern matching) — no third-party routing
+framework. Validate the entire toolchain end-to-end with one sample service before any real service
+is built.
+
+> **No external routing dependency.** CloudForge already implements all middleware in pure
+> `net/http` (`internal/middleware`). Generated service code must follow the same convention:
+> `http.NewServeMux()` with Go 1.22 `METHOD /path/{param}` patterns.
 
 ### Context
-This task depends on Task 0.1 only. It defines the toolchain that all subsequent service tasks will use. The pattern must be working and documented before Phase 1 begins.
+This task depends on Task 0.1 only. It defines the toolchain that all subsequent service tasks will
+use. The pattern must be working and documented before Phase 1 begins.
 
 ### Inputs / Prerequisites
-- Task 0.1 complete
-- `oapi-codegen` installed (`go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest`)
+- Task 0.1 complete (monorepo, Go workspace, shared `internal/` libraries)
+- Task 0.4 complete (shared middleware chain available at `internal/middleware`)
+- `oapi-codegen` v2 installed:
+  ```
+  go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest
+  ```
 
 ### Outputs / Deliverables
 
 | Deliverable | Path | Description |
 |---|---|---|
-| oapi-codegen config (server) | `api/<service>/v1/oapi-server.cfg.yaml` | Config for server stub generation |
-| oapi-codegen config (client) | `api/<service>/v1/oapi-client.cfg.yaml` | Config for client SDK generation |
+| oapi-codegen config (server) | `api/<service>/v1/oapi-server.cfg.yaml` | Generates `net/http` strict server stubs |
+| oapi-codegen config (client) | `api/<service>/v1/oapi-client.cfg.yaml` | Generates typed Go client SDK |
+| Makefile gen target | `Makefile` | `make gen-api SERVICE=<name>` target |
 | Taskfile gen target | `Taskfile.yml` | `gen:api SERVICE=<name>` target |
 | Sample spec | `api/storage/v1/openapi.yaml` | Example CloudForge Storage API spec |
-| Generated stubs | `services/storage/generated/` | Generated server interface and types |
+| Generated stubs | `services/storage/generated/` | Generated `StrictServerInterface` + types |
 | Generated client | `pkg/client/storage/` | Generated typed Go client |
+| Wire-up example | `services/storage/server.go` | Registers routes on `http.NewServeMux()` |
 | Pattern document | `docs/plan/api-first-pattern.md` | How to add a new service API |
 
 **oapi-codegen server config template:**
@@ -625,7 +640,8 @@ This task depends on Task 0.1 only. It defines the toolchain that all subsequent
 # api/<service>/v1/oapi-server.cfg.yaml
 package: generated
 generate:
-  chi-server: true
+  # "std-http-server" emits a StrictServerInterface wired to net/http — no chi dependency.
+  std-http-server: true
   strict-server: true
   models: true
   embedded-spec: true
@@ -633,6 +649,10 @@ output: ../../../services/<service>/generated/server.gen.go
 output-options:
   skip-prune: false
 ```
+
+> `std-http-server` was added in `oapi-codegen` v2.1. It generates an `http.Handler`-compatible
+> adapter that registers routes on a plain `*http.ServeMux` using Go 1.22 method+path patterns
+> (`GET /storage/v1/{tenant}/{project}/buckets`). Do **not** use `chi-server: true`.
 
 **oapi-codegen client config template:**
 ```yaml
@@ -642,6 +662,20 @@ generate:
   client: true
   models: true
 output: ../../../pkg/client/<service>/client.gen.go
+```
+
+**Makefile gen target:**
+```makefile
+.PHONY: gen-api
+gen-api: ## Generate server stubs and client SDK for a service (usage: make gen-api SERVICE=storage)
+	oapi-codegen --config api/$(SERVICE)/v1/oapi-server.cfg.yaml api/$(SERVICE)/v1/openapi.yaml
+	oapi-codegen --config api/$(SERVICE)/v1/oapi-client.cfg.yaml api/$(SERVICE)/v1/openapi.yaml
+
+.PHONY: gen-all
+gen-all: ## Regenerate all service stubs
+	@for svc in storage iam secrets resource events functions ai gateway; do \
+		$(MAKE) gen-api SERVICE=$$svc; \
+	done
 ```
 
 **Taskfile gen target:**
@@ -660,20 +694,63 @@ Implement a minimal but valid Storage API spec with at least:
 - `POST /storage/v1/{tenant}/{project}/buckets`
 - `GET /storage/v1/{tenant}/{project}/buckets`
 - `DELETE /storage/v1/{tenant}/{project}/buckets/{name}`
-- Standard error response schemas
+- Standard error response schemas (reuse the `Error` shape from `internal/errors`)
 - Request/response schemas with proper validation constraints
 
-**Validation service stub `services/storage/`:**
-- Wire the generated `StrictServerInterface` to a `chi.Router`
-- Implement placeholder handler that returns `501 Not Implemented`
-- Show that the server compiles and the router correctly routes to generated handlers
+**Wire-up example — `services/storage/server.go`:**
+
+The generated `StrictServerInterface` adapter must be registered on a plain `http.ServeMux`, then
+wrapped with the shared middleware chain from `internal/middleware`:
+
+```go
+// services/storage/server.go
+package storage
+
+import (
+    "net/http"
+
+    "github.com/jtomasevic/cloud-forge/internal/middleware"
+    "github.com/jtomasevic/cloud-forge/internal/metrics"
+    "github.com/jtomasevic/cloud-forge/services/storage/generated"
+)
+
+// NewRouter builds the storage service HTTP router.
+// Routes are registered on a stdlib mux using Go 1.22 pattern matching;
+// no third-party router is used.
+func NewRouter(impl generated.StrictServerInterface, mw middleware.Middlewares, reg *prometheus.Registry) http.Handler {
+    mux := http.NewServeMux()
+
+    // generated.HandlerWithOptions wires the StrictServerInterface to the mux.
+    // The "std-http-server" codegen target produces this helper.
+    generated.HandlerWithOptions(
+        generated.NewStrictHandler(impl, nil),
+        generated.StdHTTPServerOptions{RequestErrorHandlerFunc: errorHandler},
+    )
+
+    // Register routes on the mux — oapi-codegen registers them for us via HandlerWithOptions.
+    // Apply the shared middleware chain on top.
+    return mw.Apply(mux)
+}
+
+// errorHandler translates oapi-codegen request validation errors into
+// the platform's standard JSON error shape.
+func errorHandler(w http.ResponseWriter, r *http.Request, err error) {
+    cferrors.WriteJSON(w, r, cferrors.BadRequest(err.Error()))
+}
+```
+
+- Implement a placeholder `StorageHandlerImpl` that returns `501 Not Implemented` for every method
+- Show that the server compiles and paths like `/storage/v1/acme/my-project/buckets` route correctly
 
 ### Acceptance Criteria
-- [ ] `task gen:api storage` generates valid, compilable Go code
-- [ ] The generated server stub `StrictServerInterface` is wired to a chi router in `services/storage/`
+- [ ] `make gen-api SERVICE=storage` generates valid, compilable Go code with **no `chi` import**
+- [ ] The generated `server.gen.go` imports only `net/http` (verify: `grep -r "go-chi" services/storage/generated/` returns empty)
+- [ ] Routes are registered using `http.NewServeMux()` with Go 1.22 `METHOD /path/{param}` patterns
+- [ ] Path values are read with `r.PathValue("tenant")`, consistent with `internal/middleware/tenant.go`
+- [ ] The middleware chain from `internal/middleware` wraps the mux (request-ID, logger, metrics, panic recovery)
 - [ ] The generated client in `pkg/client/storage/` compiles and has typed methods matching the spec
-- [ ] Adding a new endpoint to the spec and re-running `gen:api` updates the generated code correctly
-- [ ] `docs/plan/api-first-pattern.md` documents the full workflow for a new engineer
+- [ ] Adding a new endpoint to the spec and re-running `make gen-api SERVICE=storage` updates the generated code correctly
+- [ ] `docs/plan/api-first-pattern.md` documents the full workflow for a new engineer, explicitly noting the `std-http-server` config option and the no-chi rule
 
 ---
 

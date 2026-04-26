@@ -1,0 +1,19 @@
+# api/storage/v1/oapi-client.cfg.yaml
+#
+# oapi-codegen configuration for generating the typed Go client SDK for the
+# CloudForge Storage API. Other CloudForge services and CLI tools import the
+# generated client from pkg/client/storage/.
+#
+# Regenerate with:
+#   make gen-api SERVICE=storage
+package: storageclient
+
+generate:
+  # client generates a typed Go HTTP client with one method per operation.
+  client: true
+
+  # models generates the shared request/response types used by both the
+  # server stubs and the client SDK.
+  models: true
+
+output: ../../../pkg/client/storage/client.gen.go

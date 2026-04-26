@@ -42,4 +42,7 @@ ignore:
   - "**/mocks/**"
   - "vendor/**"
   - "**/*.pb.go"
+  - "**/*.gen.go"
+  - "**/generated/**"
+  - "pkg/client/**"
   - "internal/testutil/**"
