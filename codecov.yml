@@ -1,0 +1,44 @@
+# codecov.yml — Codecov configuration for CloudForge.
+#
+# Codecov posts a status check and a PR comment on every pull request showing:
+#   - overall project coverage trend
+#   - per-file coverage diff for the lines changed in the PR (patch coverage)
+#
+# Documentation: https://docs.codecov.com/docs/codecovyml-reference
+
+coverage:
+  status:
+
+    # ── Project gate ──────────────────────────────────────────────────────────
+    # The overall repository coverage must stay at or above 85%.
+    # A threshold of 2% is allowed so a single PR that deletes well-tested
+    # code does not immediately block CI while the author adds new tests.
+    project:
+      default:
+        target: 85%
+        threshold: 2%
+
+    # ── Patch gate ────────────────────────────────────────────────────────────
+    # Lines that are NEW in a PR must be at least 80% covered.
+    # This ensures contributors can't land untested code even when the overall
+    # project coverage stays green.
+    patch:
+      default:
+        target: 80%
+
+# ── Comment settings ──────────────────────────────────────────────────────────
+# Codecov posts one sticky comment per PR showing the coverage diff.
+# "changes" mode shows the delta (+/-) rather than absolute numbers.
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default   # update the existing comment on every push, not create new ones
+  require_changes: false
+
+# ── Ignore paths ──────────────────────────────────────────────────────────────
+# Generated code, vendor directories, and test helpers do not need to be
+# included in the coverage gate.
+ignore:
+  - "**/*_mock.go"
+  - "**/mocks/**"
+  - "vendor/**"
+  - "**/*.pb.go"

@@ -86,27 +86,39 @@ test-integration: ## Run integration tests (requires Docker for testcontainers)
 test-all: test-unit test-integration ## Run unit and integration tests
 
 .PHONY: test-coverage
-test-coverage: ## Run unit tests with HTML coverage report
-	go test -short -race -coverprofile=coverage.out ./...
+test-coverage: ## Run unit tests with per-package and per-function coverage report
+	@echo "Running tests with coverage across all packages..."
+	go test -short -race -coverprofile=coverage.out -covermode=atomic ./...
+	@echo ""
+	@echo "── Per-package coverage ────────────────────────────────────────────"
+	@go tool cover -func=coverage.out | grep -E "^github|^total" | \
+		awk '{ printf "%-70s %s\n", $$1, $$NF }'
+	@echo ""
+	@go tool cover -func=coverage.out | tail -1
+	@echo ""
+	@echo "── Generating HTML report → coverage.html ──────────────────────────"
 	go tool cover -html=coverage.out -o coverage.html
-	@echo "Coverage report → coverage.html"
+	@echo "Open coverage.html in a browser to browse line-by-line coverage."
 
 # ── Linting and formatting ────────────────────────────────────────────────────
 
 ##@ Lint & Format
 
 .PHONY: lint
-lint: ## Run golangci-lint
-	golangci-lint run ./...
+lint: ## Run golangci-lint (same config as CI)
+	@which golangci-lint > /dev/null || (echo "golangci-lint not found — run: brew install golangci-lint" && exit 1)
+	golangci-lint run --config=.golangci.yml ./...
 
 .PHONY: lint-fix
-lint-fix: ## Run golangci-lint with auto-fix
-	golangci-lint run --fix ./...
+lint-fix: ## Run golangci-lint with auto-fix enabled
+	@which golangci-lint > /dev/null || (echo "golangci-lint not found — run: brew install golangci-lint" && exit 1)
+	golangci-lint run --config=.golangci.yml --fix ./...
 
 .PHONY: fmt
-fmt: ## Format all Go files with goimports and gofmt
-	goimports -w -local $(MODULE) .
+fmt: ## Format all Go files (gofmt + goimports)
 	gofmt -w .
+	@which goimports > /dev/null && goimports -w -local github.com/jtomasevic/cloud-forge . || \
+		echo "goimports not found — run: go install golang.org/x/tools/cmd/goimports@latest"
 
 .PHONY: vet
 vet: ## Run go vet

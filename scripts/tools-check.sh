@@ -113,6 +113,16 @@ else
   FAILED=1
 fi
 
+# ── golangci-lint ─────────────────────────────────────────────────────────────
+if command -v golangci-lint &>/dev/null; then
+  LINT_VER=$(golangci-lint version --short 2>/dev/null || golangci-lint version 2>/dev/null | awk '{print $4}' || echo "unknown")
+  ok "golangci-lint ${LINT_VER}"
+else
+  missing "golangci-lint" "not found"
+  brew_install "golangci-lint" || true
+  if [[ $FAILED -eq 0 ]] && ! command -v golangci-lint &>/dev/null; then FAILED=1; fi
+fi
+
 # ── Result ────────────────────────────────────────────────────────────────────
 echo ""
 if [[ $FAILED -ne 0 ]]; then
@@ -120,10 +130,11 @@ if [[ $FAILED -ne 0 ]]; then
   if ! $IS_MACOS || ! $HAS_BREW; then
     echo ""
     echo -e "${YELLOW}On Linux, install missing tools manually:${NC}"
-    echo "  k3d:     curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash"
-    echo "  kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
-    echo "  helm:    https://helm.sh/docs/intro/install/"
-    echo "  task:    https://taskfile.dev/installation/"
+    echo "  k3d:           curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash"
+    echo "  kubectl:       https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
+    echo "  helm:          https://helm.sh/docs/intro/install/"
+    echo "  task:          https://taskfile.dev/installation/"
+    echo "  golangci-lint: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b \$(go env GOPATH)/bin"
   fi
   echo ""
   exit 1
