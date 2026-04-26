@@ -57,8 +57,9 @@ deploy-component: ## Deploy a named component: make deploy-component SERVICE=cf-
 .PHONY: gen-api
 gen-api: ## Generate server stubs and client SDK for one service: make gen-api SERVICE=storage
 	@test -n "$(SERVICE)" || (echo "ERROR: SERVICE is required. Usage: make gen-api SERVICE=storage" && exit 1)
-	oapi-codegen --config api/$(SERVICE)/v1/oapi-server.cfg.yaml api/$(SERVICE)/v1/openapi.yaml
-	oapi-codegen --config api/$(SERVICE)/v1/oapi-client.cfg.yaml api/$(SERVICE)/v1/openapi.yaml
+	@which oapi-codegen > /dev/null || (echo "oapi-codegen not found — run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest" && exit 1)
+	cd api/$(SERVICE)/v1 && oapi-codegen --config oapi-server.cfg.yaml openapi.yaml
+	cd api/$(SERVICE)/v1 && oapi-codegen --config oapi-client.cfg.yaml openapi.yaml
 
 .PHONY: gen-all
 gen-all: ## Regenerate all OpenAPI server stubs and client SDKs
@@ -89,7 +90,11 @@ test-all: test-unit test-integration ## Run unit and integration tests
 test-coverage: ## Run unit tests with per-package and per-function coverage report
 	@echo "Running tests with coverage across all packages..."
 	go test -short -race -coverprofile=coverage.out -covermode=atomic \
-		$(shell go list ./... | grep -v '/mocks' | grep -v 'internal/testutil')
+		$(shell go list ./... \
+			| grep -v '/mocks' \
+			| grep -v 'internal/testutil' \
+			| grep -v '/generated' \
+			| grep -v 'pkg/client/')
 	@echo ""
 	@echo "── Per-package coverage ────────────────────────────────────────────"
 	@go tool cover -func=coverage.out | grep -E "^github|^total" | \
