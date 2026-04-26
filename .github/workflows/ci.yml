@@ -57,7 +57,7 @@ jobs:
           go test -short -race -count=1 \
             -coverprofile=coverage.out \
             -covermode=atomic \
-            ./...
+            $(go list ./... | grep -v '/mocks' | grep -v 'internal/testutil')
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
