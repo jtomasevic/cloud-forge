@@ -1,0 +1,24 @@
+# ScyllaDB server configuration overrides for the CloudForge dev cluster.
+# Mounted as /etc/scylla/scylla.yaml inside the ScyllaDB container.
+# The ScyllaCluster manifest references this ConfigMap by name.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudforge-scylla-config
+  namespace: cf-data
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: scylladb
+data:
+  scylla.yaml: |
+    # Require password auth so the cloudforge_svc service account is the only
+    # client the platform services use.  Never use the cassandra/cassandra
+    # superuser in application code.
+    authenticator: PasswordAuthenticator
+    authorizer: CassandraAuthorizer
+
+    # Alternator (DynamoDB-compatible API) is intentionally disabled here.
+    # The Resource Capability Binding store uses native CQL (port 9042) for
+    # better performance and full schema control.
+    # Alternator is activated by CF-DBController for consumer-facing DynamoDB
+    # workloads in Phase 4.

@@ -280,15 +280,17 @@ Phase 9 is not a single milestone but a continuous hardening and capability-expa
 - **Dependencies:** Task 0.3
 - **Type:** Spike / prototype
 
-#### Task 0.7 — Spike: OPA Embedded Policy Evaluation
+#### Task 0.7 — Spike: Resource Capability Binding System
 
-- **Purpose:** Validate OPA embedded mode performance for CF-IAM authorization checks.
-- **Scope:** Prototype: sample CloudForge IAM policy in Rego, compiled and evaluated in a Go process, benchmarked at 100 and 1,000 policy bundles.
+- **Purpose:** Validate the design and hot-path performance of the platform's resource-to-resource authorization layer — the system that decides whether a Function may consume from a Queue, a Queue may write to Storage, or an AI job may read from a database. This is distinct from user-API authorization (CF-IAM, Phase 1): there is no human principal here — the platform itself enforces permitted bindings between its own resources.
+- **Scope:** Prototype: two-layer permission model (Go structural rules table + PostgreSQL instance bindings with write-through in-process cache), write-through cache with NATS-based invalidation, permission checker interface, proposed OpenAPI spec for binding management. Benchmarked for DB query latency and cache hit latency.
 - **Key deliverables:**
-  - Spike code in `spikes/opa-embedded/`
-  - Benchmark results: evaluation latency at various policy set sizes
-  - Decision: embedded OPA vs OPA daemon for runtime use
-  - Initial Rego module structure for CloudForge IAM policies
+  - Spike code in `spikes/resource-permissions/`
+  - Benchmark results: p99 latency for DB path and cache-hit path
+  - Cache invalidation strategy confirmed (NATS event `resource.binding.revoked`)
+  - Confirmed API shape for binding management (create / revoke / list by subject / list by target)
+  - Decision: are Go-level structural rules sufficient for v1, or is a policy language (Cedar, OPA) needed for type rules?
+  - Cross-tenant rejection confirmed at both API layer and checker layer
 - **Dependencies:** Task 0.1
 - **Type:** Spike / prototype
 

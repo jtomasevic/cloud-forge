@@ -123,6 +123,18 @@ else
   if [[ $FAILED -eq 0 ]] && ! command -v golangci-lint &>/dev/null; then FAILED=1; fi
 fi
 
+# ── cqlsh (optional) ──────────────────────────────────────────────────────────
+# cqlsh is only needed for local ScyllaDB access (make scylladb-local-shell).
+# It is NOT required for make dev-up — the schema init Job runs cqlsh inside
+# the cluster.  We warn but do not fail if it is absent.
+if command -v cqlsh &>/dev/null; then
+  CQLSH_VER=$(cqlsh --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+  ok "cqlsh ${CQLSH_VER} (optional — for local ScyllaDB shell access)"
+else
+  echo -e "  ${YELLOW}?${NC} cqlsh — not found (optional)"
+  echo -e "    ${YELLOW}→ Install: pip install cqlsh${NC}"
+fi
+
 # ── Result ────────────────────────────────────────────────────────────────────
 echo ""
 if [[ $FAILED -ne 0 ]]; then

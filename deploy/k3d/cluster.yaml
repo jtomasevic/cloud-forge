@@ -20,6 +20,9 @@ ports:
   # NATS client port (exposed for local tooling)
   - port: "4222:4222"
     nodeFilters: ["server:0"]
+  # ScyllaDB CQL — exposed for local cqlsh and tooling
+  - port: "9042:9042"
+    nodeFilters: ["server:0"]
 
 options:
   k3s:

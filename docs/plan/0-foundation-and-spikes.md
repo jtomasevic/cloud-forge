@@ -834,101 +834,715 @@ github.com/cloudevents/sdk-go/v2
 ```
 
 ---
+## Task 0.7 — Deploy ScyllaDB in the k3d Dev Cluster
 
-## Spike 0.7 — OPA Embedded Policy Evaluation
+### Goal
+
+Install the Scylla Operator and provision a single-node ScyllaDB cluster in the
+`cf-data` namespace of the local k3d dev cluster. Create the
+`cloudforge_platform` keyspace and the `resource_bindings` table that the
+Resource Capability Binding System (Spike 0.7) will use as its durable store.
+
+This gives every engineer a running, schema-ready ScyllaDB instance from
+`make dev:up` onwards — no manual steps required.
+
+---
+
+### Context
+
+ScyllaDB is CloudForge's DynamoDB replacement (architecture doc §5.5). It runs
+in the `cf-data` namespace alongside CloudNativePG and MinIO. For local
+development a single-node cluster is sufficient; the schema and access patterns
+are identical to what production will use.
+
+The binding store holds platform resource-to-resource permission records.
+The access patterns that drive the schema design are:
+
+- **Check** — "does binding (tenant A, function X → consume → queue Y) exist?"
+  — primary key point lookup on `(tenant_id, binding_key)`
+- **List by subject** — "what can this function do?"
+  — prefix range scan on `(tenant_id, binding_key)` using the subject prefix
+- **List by target** — "what can access this queue?"
+  — served by a materialized view partitioned on `(tenant_id, target_kind, target_name)`
+
+ScyllaDB's shard-per-core architecture makes single-digit microsecond point
+lookups routine, which reduces pressure on the in-process cache hit rate
+threshold compared to PostgreSQL.
+
+---
+
+### Inputs / Prerequisites
+
+- Task 0.3 complete — k3d cluster running (`cloudforge-dev`), all namespaces
+  applied, `local-path` storage class available
+- `helm` ≥ 3.14 installed
+- `kubectl` configured to the `cloudforge-dev` context
+
+---
+
+### Outputs / Deliverables
+
+| Deliverable | Path | Description |
+|---|---|---|
+| Scylla Operator Helm values | `deploy/helm/components/scylla-operator/values.yaml` | Operator Helm overrides |
+| ScyllaCluster manifest | `deploy/kustomize/components/scylladb/scyllacluster.yaml` | Single-node dev cluster spec |
+| ScyllaDB ConfigMap | `deploy/kustomize/components/scylladb/config.yaml` | `scylla.yaml` server overrides |
+| Schema CQL file | `deploy/kustomize/components/scylladb/schema.cql` | DDL for keyspace + tables |
+| Schema init Job | `deploy/kustomize/components/scylladb/init-job.yaml` | Kubernetes Job that applies the DDL |
+| Kustomization | `deploy/kustomize/components/scylladb/kustomization.yaml` | Wires all manifests above |
+| k3d cluster patch | `deploy/k3d/cluster.yaml` | Add CQL port `9042` to exposed ports |
+| Taskfile targets | `Taskfile.yml` | `deploy:scylladb`, `wait:scylladb`; called from `dev:up` |
+| Makefile targets | `Makefile` | Mirror of Taskfile targets |
+
+---
+
+### k3d Cluster Patch
+
+Add one entry to the `ports` list in `deploy/k3d/cluster.yaml` so `cqlsh`
+and other local tooling can reach ScyllaDB without going through the ingress:
+
+```yaml
+# ScyllaDB CQL — exposed for local cqlsh and tooling
+- port: "9042:9042"
+  nodeFilters: ["server:0"]
+```
+
+---
+
+### Scylla Operator Installation
+
+The Scylla Operator must be installed once into a dedicated `scylla-operator`
+namespace before any `ScyllaCluster` resource can be created.
+
+```bash
+helm repo add scylladb https://storage.googleapis.com/scylla-operator-charts/stable
+helm repo update
+
+helm upgrade --install scylla-operator scylladb/scylla-operator \
+  --namespace scylla-operator \
+  --create-namespace \
+  --version 1.15.0 \
+  --set logLevel=2
+```
+
+`deploy/helm/components/scylla-operator/values.yaml`:
+
+```yaml
+# Minimal overrides for the dev cluster.
+# Production values are managed by CF-DBController in Phase 4.
+logLevel: 2
+```
+
+---
+
+### ScyllaDB Cluster Manifest
+
+`deploy/kustomize/components/scylladb/scyllacluster.yaml`:
+
+```yaml
+apiVersion: scylla.scylladb.com/v1
+kind: ScyllaCluster
+metadata:
+  name: cloudforge-scylla
+  namespace: cf-data
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: scylladb
+spec:
+  version: "6.2.2"
+  agentVersion: "3.3.0"
+
+  # developerMode: true disables kernel-level OS checks (huge pages, CPU governor)
+  # that cannot be satisfied inside a k3d Docker node.
+  # MUST be false in production.
+  developerMode: true
+
+  datacenter:
+    name: local
+    racks:
+      - name: rack1
+        scyllaConfig: cloudforge-scylla-config
+
+        # local-path is k3d's default storage class.
+        # Production uses a fast NVMe-backed StorageClass.
+        storage:
+          capacity: 10Gi
+          storageClassName: local-path
+
+        # Single member for dev. Production uses >= 3 members across racks.
+        members: 1
+
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+```
+
+`deploy/kustomize/components/scylladb/config.yaml`:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudforge-scylla-config
+  namespace: cf-data
+data:
+  scylla.yaml: |
+    # Enable password authentication so the platform service account
+    # (cloudforge_svc) is the only client allowed to connect.
+    authenticator: PasswordAuthenticator
+    authorizer: CassandraAuthorizer
+    # Alternator (DynamoDB API) is NOT enabled here.
+    # The binding store uses native CQL for better performance and full schema control.
+    # Alternator is activated by CF-DBController for consumer-facing DynamoDB
+    # workloads in Phase 4.
+```
+
+---
+
+### Schema
+
+`deploy/kustomize/components/scylladb/schema.cql`:
+
+```cql
+-- ─────────────────────────────────────────────────────────────────────────────
+-- CloudForge Platform Keyspace
+-- RF=1 for dev; CF-DBController sets RF=3 in production.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE KEYSPACE IF NOT EXISTS cloudforge_platform
+    WITH REPLICATION = {
+        'class': 'NetworkTopologyStrategy',
+        'local': 1
+    }
+    AND DURABLE_WRITES = true;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Resource Capability Bindings
+--
+-- Primary access pattern (hot path):
+--   CHECK   SELECT * FROM resource_bindings
+--           WHERE tenant_id = ? AND binding_key = ?
+--
+-- binding_key is a composite sort key built by the Go layer:
+--   <subject_kind>#<subject_name>#<permission>#<target_kind>#<target_name>
+--
+-- This makes the permission check a single-partition point lookup (O(1)) and
+-- "list all bindings for subject X" a narrow prefix range scan on the same
+-- partition — no scatter reads, no secondary index fan-out.
+--
+-- The unpacked columns (subject_kind, subject_name, …) are stored alongside
+-- binding_key for readability and direct Go struct mapping via gocqlx.
+-- ScyllaDB stores them on the same SSTable row at no extra I/O cost.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS cloudforge_platform.resource_bindings (
+    tenant_id    TEXT,
+    binding_key  TEXT,
+    id           UUID,
+    subject_kind TEXT,
+    subject_name TEXT,
+    permission   TEXT,
+    target_kind  TEXT,
+    target_name  TEXT,
+    created_at   TIMESTAMP,
+    created_by   TEXT,
+    PRIMARY KEY (tenant_id, binding_key)
+) WITH CLUSTERING ORDER BY (binding_key ASC)
+  AND gc_grace_seconds = 86400
+  AND compaction = {'class': 'LeveledCompactionStrategy'}
+  AND comment = 'Platform resource-to-resource capability bindings. See pkg/authz/README.md.';
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Materialized View: look up bindings by target
+--
+-- Secondary access pattern:
+--   LIST BY TARGET   SELECT * FROM resource_bindings_by_target
+--                    WHERE tenant_id = ? AND target_kind = ? AND target_name = ?
+--
+-- Serves the "what resources have permission over this Queue/Storage/…?" query
+-- used by the binding management API list-by-target endpoint and by the
+-- admission webhook that validates new resource bindings.
+--
+-- A materialized view is used instead of a secondary index because ScyllaDB
+-- secondary indexes are shard-local and require scatter reads across all shards.
+-- A MV is a full replica of the data with a different partition key — point
+-- lookups remain single-partition regardless of cluster size.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE MATERIALIZED VIEW IF NOT EXISTS cloudforge_platform.resource_bindings_by_target AS
+    SELECT *
+    FROM cloudforge_platform.resource_bindings
+    WHERE tenant_id   IS NOT NULL
+      AND binding_key  IS NOT NULL
+      AND target_kind  IS NOT NULL
+      AND target_name  IS NOT NULL
+    PRIMARY KEY (
+        (tenant_id, target_kind, target_name),
+        binding_key
+    )
+    WITH CLUSTERING ORDER BY (binding_key ASC);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Service Account
+-- The platform uses a dedicated credential pair; the default cassandra/cassandra
+-- superuser is used only for this bootstrap step and must be disabled afterward.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE ROLE IF NOT EXISTS cloudforge_svc
+    WITH PASSWORD = 'cf-dev-secret-change-in-prod'
+    AND LOGIN = true
+    AND SUPERUSER = false;
+
+GRANT ALL PERMISSIONS ON KEYSPACE cloudforge_platform TO cloudforge_svc;
+```
+
+**Schema design notes (for implementers):**
+
+- **Partition key is `tenant_id` alone.** All bindings for one tenant land on
+  the same shard. Correct for an SME platform with tens to hundreds of tenants.
+  At much larger scale a compound partition `(tenant_id, subject_kind)` would
+  distribute load better — this is a CF-DBController concern for Phase 4.
+- **`binding_key` encodes the full binding identity** as a single string so a
+  `CHECK` query needs only one CQL equality predicate on the clustering column.
+  The Go layer constructs it as
+  `fmt.Sprintf("%s#%s#%s#%s#%s", subjectKind, subjectName, perm, targetKind, targetName)`.
+- **`DURABLE_WRITES = true`** ensures the commit log is flushed before
+  acknowledging a create or revoke — required for permission records where
+  a lost write would silently grant or retain access.
+- **`LeveledCompactionStrategy`** is preferred for the binding table because
+  reads are frequent and uniform (point lookups by tenants), and LCS minimises
+  read amplification by keeping SSTable count low.
+
+---
+
+### Schema Init Job
+
+`deploy/kustomize/components/scylladb/init-job.yaml`:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scylladb-schema-init
+  namespace: cf-data
+  annotations:
+    cloudforge.io/schema-version: "0.1.0"
+spec:
+  # Clean up the completed pod automatically after 5 minutes.
+  ttlSecondsAfterFinished: 300
+  # Retry up to 10 times while ScyllaDB is still starting.
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Block until the CQL port is reachable before running DDL.
+        - name: wait-for-scylla
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z cloudforge-scylla-client.cf-data.svc.cluster.local 9042; do
+                echo "waiting for ScyllaDB CQL port..."; sleep 3;
+              done
+      containers:
+        - name: cqlsh
+          image: scylladb/scylla:6.2.2
+          command:
+            - cqlsh
+            - cloudforge-scylla-client.cf-data.svc.cluster.local
+            - "9042"
+            - -u
+            - cassandra
+            - -p
+            - cassandra
+            - -f
+            - /schema/schema.cql
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+      volumes:
+        - name: schema
+          configMap:
+            name: scylladb-schema-cql
+```
+
+---
+
+### Kustomization
+
+`deploy/kustomize/components/scylladb/kustomization.yaml`:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - config.yaml
+  - scyllacluster.yaml
+  - init-job.yaml
+configMapGenerator:
+  - name: scylladb-schema-cql
+    namespace: cf-data
+    files:
+      - schema.cql
+    options:
+      disableNameSuffixHash: true
+```
+
+---
+
+### Taskfile Targets
+
+Add to `Taskfile.yml`. The `dev:up` task must call `deploy:scylladb` after
+namespaces are applied.
+
+```yaml
+deploy:scylladb:
+  desc: "Install Scylla Operator and provision the dev ScyllaDB cluster"
+  cmds:
+    - helm repo add scylladb https://storage.googleapis.com/scylla-operator-charts/stable --force-update
+    - helm repo update
+    - |
+      helm upgrade --install scylla-operator scylladb/scylla-operator \
+        --namespace scylla-operator \
+        --create-namespace \
+        --version 1.15.0 \
+        -f deploy/helm/components/scylla-operator/values.yaml \
+        --wait
+    - kubectl apply -k deploy/kustomize/components/scylladb/
+    - task: wait:scylladb
+
+wait:scylladb:
+  desc: "Wait for ScyllaDB cluster and schema init Job to become ready"
+  cmds:
+    - |
+      kubectl wait scyllacluster/cloudforge-scylla \
+        --for='condition=Available' \
+        --timeout=300s \
+        -n cf-data
+    - |
+      kubectl wait job/scylladb-schema-init \
+        --for=condition=complete \
+        --timeout=120s \
+        -n cf-data
+```
+
+---
+
+### Acceptance Criteria
+
+- [ ] `make dev:up` results in a `ScyllaCluster` with `Available: true` in `cf-data`
+- [ ] `kubectl get scyllacluster -n cf-data` shows `cloudforge-scylla` with `READY: 1`
+- [ ] Schema init Job status is `Complete`
+- [ ] The following CQL query succeeds from localhost:
+  ```bash
+  cqlsh localhost 9042 -u cloudforge_svc -p cf-dev-secret-change-in-prod \
+    -e "DESCRIBE KEYSPACE cloudforge_platform;"
+  ```
+  Output includes both `resource_bindings` table and `resource_bindings_by_target` view.
+- [ ] A test INSERT + SELECT roundtrip on `resource_bindings` succeeds via `cqlsh`
+- [ ] `developerMode: true` is confirmed set (k3d cannot satisfy ScyllaDB's kernel requirements without it)
+- [ ] The default `cassandra/cassandra` password is changed or the role is disabled after init
+- [ ] `make dev:down` cleanly removes all ScyllaDB resources and their PVCs
+
+---
+
+### Notes for Spike 0.8 (Resource Capability Binding System)
+
+Once this task is complete, the spike implements `ScyllaStore` using
+`github.com/scylladb/gocqlx/v3` (the recommended ScyllaDB Go client, as noted
+in the implementation plan §7):
+
+```go
+// pkg/authz/store/scylla.go
+//
+// Uses native CQL, NOT the Alternator (DynamoDB) API.
+// Alternator is reserved for consumer-facing DynamoDB workloads in Phase 4.
+cluster := gocql.NewCluster(
+    "cloudforge-scylla-client.cf-data.svc.cluster.local",
+)
+cluster.Authenticator = gocql.PasswordAuthenticator{
+    Username: "cloudforge_svc",
+    Password: os.Getenv("CF_SCYLLA_PASSWORD"),
+}
+cluster.Keyspace = "cloudforge_platform"
+session, err := gocqlx.WrapSession(cluster.CreateSession())
+```
+
+The `BindingStore` interface remains backend-agnostic. Only this constructor
+differs between the PostgreSQL fallback (used if ScyllaDB is not yet deployed)
+and the ScyllaDB implementation. The hot-path `Check` method is identical to
+callers in CF-EventRouter and CF-FunctionTrigger regardless of which backend
+is active.
+
+---
+
+## Spike 0.8 — Resource Capability Binding System
 
 ### Context and Motivation
-CF-IAM (Phase 1) will use OPA (Open Policy Agent) for authorization policy evaluation. Every API call to every CloudForge service will ultimately result in a call to `pkg/authz/checker.go`, which calls OPA to evaluate a policy.
 
-The critical question: **can OPA embedded in a Go process evaluate CloudForge IAM policies fast enough?** If p99 authorization latency adds more than 5ms to every API call, it becomes a bottleneck.
+CloudForge has **two distinct authorization problems** that must not be conflated:
 
-Two deployment options exist:
-1. **OPA embedded** — OPA compiled and run inside the CF-IAM Go process via `github.com/open-policy-agent/opa/v1/rego`. No network hop. Policies loaded from disk or memory.
-2. **OPA daemon** — OPA runs as a separate Kubernetes pod. CF-IAM calls the OPA HTTP API (`POST /v1/data/...`). Network hop on every authz check.
+**Problem A — User-to-Platform authorization** (human or service principal → API call):
+> "Can tenant-user Alice invoke `storage:write` on bucket `my-model-weights`?"
 
-This spike must produce benchmark data to make the decision.
+This is a classic IAM question and belongs entirely in CF-IAM (Phase 1).
+OPA + Rego is the correct tool here because the logic is complex: role hierarchies,
+tenant and project scoping, service account principals, deny-override rules, and
+AI workload identity patterns all need expressive policy evaluation.
+OPA performance for this path is validated separately in Task 1.3 of Phase 1.
+
+**Problem B — Resource-to-Resource authorization** (platform resource → platform resource):
+> "Can this Function consume from this Queue?"
+> "Can this Queue write to this Storage bucket?"
+> "Can this AI training job read from this database?"
+
+This is a different problem entirely. There is no human calling an API.
+CF-EventRouter is routing an event, CF-FunctionTrigger is wiring a trigger —
+and before doing so, the platform must confirm the binding between the source
+resource and the destination resource is permitted.
+
+**Why OPA is the wrong tool for Problem B:**
+OPA is a stateless policy evaluation engine. It evaluates rules against data you
+push into it, but it does not store state. For resource-to-resource permissions,
+you need a **binding store** (who is connected to what, tenant-scoped, with full
+CRUD lifecycle) combined with **structural type rules** (which resource kinds are
+allowed to bind at all). Routing binding data into OPA and keeping it in sync
+creates a secondary synchronisation problem with no benefit: the core decisions
+are either Go-constant type rules (platform invariants that never change per-tenant)
+or simple database lookups (does binding X exist?). Neither requires a policy language.
+
+This spike validates the **Resource Capability Binding system** design, its
+hot-path performance, its runtime mutability, and the proposed API surface — so
+CF-ResourceController (Phase 1, Task 1.x) knows exactly what to build.
+
+---
+
+### Authorization Model
+
+The system uses two layers:
+
+**Layer 1 — Structural rules (compiled into `pkg/authz/rules.go`)**
+
+Platform invariants, defined once by the platform team. Express which resource
+*type* combinations are allowed to bind at all. Never changed at runtime; no
+policy language required.
+
+```
+Function   → consume  → Queue
+Function   → publish  → Queue
+Function   → read     → Storage
+Function   → write    → Storage
+Function   → read     → Database
+Queue      → trigger  → Function
+App        → read     → Storage
+Aoo        → write    → Storage
+Queue      → write    → Storage
+AIJob      → read     → Storage
+AIJob      → read     → Database
+AIServing  → read     → Storage
+...
+```
+
+**Layer 2 — Instance bindings (PostgreSQL table, tenant-scoped)**
+
+Actual bindings created by tenants through the CloudForge API. Stored in the
+platform database. The subject and target must both belong to the same tenant
+(enforced by a DB constraint and by the Go checker). A binding is rejected at
+creation time if the subject-kind → permission → target-kind combination does
+not exist in Layer 1.
+
+```sql
+resource_bindings (
+    id          UUID PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    subject_kind TEXT NOT NULL,   -- e.g. "function"
+    subject_name TEXT NOT NULL,   -- e.g. "process-orders"
+    permission   TEXT NOT NULL,   -- e.g. "consume"
+    target_kind  TEXT NOT NULL,   -- e.g. "queue"
+    target_name  TEXT NOT NULL,   -- e.g. "order-events"
+    created_at  TIMESTAMPTZ NOT NULL,
+    created_by  TEXT NOT NULL,    -- IAM principal that created this binding
+    UNIQUE (tenant_id, subject_kind, subject_name, permission, target_kind, target_name)
+)
+```
+
+**Hot-path check (CF-EventRouter, CF-FunctionTrigger):**
+
+```
+Step 1 — structural (O(1) Go map):
+  Is (Function, consume, Queue) in AllowedBindings?  → if not, deny immediately
+
+Step 2 — instance (cache hit or DB query):
+  Does binding (tenant-a/process-orders → consume → tenant-a/order-events) exist?
+  → check write-through in-process cache first (< 1µs on hit)
+  → fall back to PostgreSQL query on miss (single indexed lookup)
+```
+
+---
 
 ### Questions This Spike Must Answer
 
 | # | Question | Acceptable Answer |
 |---|---|---|
-| Q1 | What is the p99 policy evaluation latency for embedded OPA with a 50-policy bundle? | < 5ms |
-| Q2 | What is the p99 policy evaluation latency for embedded OPA with a 500-policy bundle? | < 10ms |
-| Q3 | What is memory overhead of embedded OPA in a Go process with a 50-policy bundle? | Document number |
-| Q4 | Can a Rego policy module be compiled and loaded incrementally (add one policy without reloading all)? | Yes or No; if No, document the reload strategy |
-| Q5 | Is the OPA embedded mode sufficient, or is the OPA daemon required? | Make a clear recommendation with justification |
+| Q1 | What is the p99 latency of a binding check via direct PostgreSQL query in the event routing hot path? | < 1 ms |
+| Q2 | With a write-through in-process cache, what is the p99 binding check latency on a cache hit? | < 50 µs |
+| Q3 | Can bindings be created and revoked at runtime without restarting any service? | Yes — define the cache invalidation strategy |
+| Q4 | What is the correct API model for binding management (shape, scoping, error responses)? | Propose and validate OpenAPI spec |
+| Q5 | Are Go-level structural rules sufficient for v1 type-level enforcement, or is a policy language (Cedar, OPA) required for the rule table? | Decision with rationale |
+
+---
 
 ### Spike Scope
+
 Time-box: **2 days maximum.**
 
-**What to build in `spikes/opa-embedded/`:**
-1. A realistic CloudForge IAM Rego policy module covering at minimum:
-   - `allow` rule for `iam:read`, `iam:write`, `storage:read`, `storage:write`
-   - Tenant and project scoping (principal must be in the correct tenant to access resources)
-   - Service account principals with scoped permissions
-   - A `deny` rule that rejects cross-tenant access
-2. A Go benchmark program (`bench_test.go`) that:
-   - Loads the policy bundle into OPA embedded
-   - Benchmarks `rego.New(...).Eval(ctx, rego.EvalInput(input))` for single and multi-policy evaluation
-   - Tests at 1, 50, and 500 policy bundles (generate synthetic policies to reach target counts)
-   - Prints p50/p95/p99 latency using `testing.B`
+**What to build in `spikes/resource-permissions/`:**
+
+1. **`internal/model/`** — shared data types:
+   - `ResourceKind`, `Permission` constants
+   - `ResourceRef` struct (kind, name, tenant ID)
+   - `Binding` struct
+   - `AllowedBindings` table (Layer 1) as a compiled Go slice + lookup map
+
+2. **`internal/store/`** — binding persistence:
+   - `BindingStore` interface (Check, Create, Revoke, ListBySubject, ListByTarget)
+   - `PostgresStore` implementation backed by `pgx/v5`
+   - `CachedStore` write-through wrapper using `sync.Map` (or `ristretto` if eviction is needed)
+   - Cache invalidation via NATS event `resource.binding.revoked` (demonstrates platform event bus reuse)
+
+3. **`internal/checker/`** — the two-phase enforcement function:
+   - `PermissionChecker` interface: `Check(ctx, subject, perm, target) (bool, error)`
+   - `Checker` implementation: Layer 1 lookup → Layer 2 lookup → allow/deny
+   - Strict cross-tenant guard: if `subject.TenantID != target.TenantID`, deny immediately
+
+4. **`bench_test.go`** — Go benchmarks:
+   - `BenchmarkCheck_CacheHit` — warm cache, repeated checks
+   - `BenchmarkCheck_DBMiss` — cold cache, measures PostgreSQL query latency
+   - `BenchmarkCheck_CacheInvalidation` — create + revoke cycle, measures propagation time
+   - Use `testing.B` with `b.ReportMetric` for p50/p95/p99
+
+5. **`api/openapi.yaml`** — proposed binding management API:
+   ```
+   POST   /v1/tenants/{tenant}/bindings          create a binding
+   GET    /v1/tenants/{tenant}/bindings           list all bindings
+   GET    /v1/tenants/{tenant}/bindings/{id}      get one binding
+   DELETE /v1/tenants/{tenant}/bindings/{id}      revoke a binding
+   GET    /v1/tenants/{tenant}/bindings?subject_kind=function&subject_name=X
+   GET    /v1/tenants/{tenant}/bindings?target_kind=queue&target_name=Y
+   ```
+
+6. **`docker-compose.yaml`** — single-node PostgreSQL for the spike
+
+---
+
+### Core Go Interfaces to Design and Validate
+
+```go
+// pkg/authz/resource_checker.go  (proposed location in the monorepo)
+
+// ResourceKind identifies a CloudForge resource type.
+type ResourceKind string
+
+const (
+    KindFunction  ResourceKind = "function"
+    KindQueue     ResourceKind = "queue"
+    KindStorage   ResourceKind = "storage"
+    KindDatabase  ResourceKind = "database"
+    KindAIJob     ResourceKind = "ai_job"
+    KindAIServing ResourceKind = "ai_serving"
+)
+
+// Permission names the capability being granted or checked.
+type Permission string
+
+const (
+    PermConsume Permission = "consume"
+    PermPublish Permission = "publish"
+    PermRead    Permission = "read"
+    PermWrite   Permission = "write"
+    PermTrigger Permission = "trigger"
+)
+
+// ResourceRef uniquely identifies a single platform resource instance.
+type ResourceRef struct {
+    Kind     ResourceKind
+    Name     string // unqualified name within the tenant
+    TenantID string
+}
+
+// PermissionChecker is the single call-site interface used by CF-EventRouter,
+// CF-FunctionTrigger, and any other service that enforces resource-to-resource
+// permissions at runtime.
+type PermissionChecker interface {
+    Check(ctx context.Context, subject ResourceRef, perm Permission, target ResourceRef) (bool, error)
+}
+```
+
+---
+
+### Cache Invalidation Strategy to Validate
+
+When a binding is revoked via the API:
+1. CF-ResourceController deletes the row from PostgreSQL.
+2. CF-ResourceController publishes `resource.binding.revoked` to NATS (CloudEvents envelope).
+3. Every service instance that holds a `CachedStore` subscribes to this subject and removes the entry from its local `sync.Map`.
+4. A fallback TTL (30 seconds) ensures stale entries are evicted even if the NATS event is missed.
+
+The spike must confirm that step 3 propagates within an acceptable window (< 500 ms on a local cluster).
+
+---
 
 ### Required Findings Document
-After the spike, write `spikes/opa-embedded/FINDINGS.md` with:
-- Benchmark results table (1, 50, 500 policies × embedded latency)
-- Memory overhead measurement
-- **Decision: embedded OPA vs OPA daemon** — with rationale
-- **Initial Rego module structure for CloudForge IAM policies** — the policy file layout that CF-IAM Task 1.3 should implement
-- Recommended bundle compilation and hot-reload strategy
+
+After the spike, write `spikes/resource-permissions/FINDINGS.md` with:
+
+- Benchmark results table (DB query latency, cache hit latency, invalidation propagation time)
+- **Decision: is Go-level structural rules table sufficient for v1, or do we need Cedar/OPA for type rules?** Rationale required.
+- **Confirmed API shape** for binding management — the exact OpenAPI spec that CF-ResourceController Task 1.x should implement
+- **Cache invalidation approach confirmed** — NATS-based invalidation latency measured
+- **Cross-tenant enforcement confirmed** — test that a binding where `subject.tenantID != target.tenantID` is rejected at both the API layer and the checker layer
+
+---
 
 ### Output Files
 
 ```
-spikes/opa-embedded/
-├── policies/
-│   ├── iam.rego
-│   ├── storage.rego
-│   └── common.rego
-├── bench_test.go
+spikes/resource-permissions/
+├── internal/
+│   ├── model/
+│   │   ├── types.go           ← ResourceKind, Permission, ResourceRef, Binding
+│   │   └── rules.go           ← AllowedBindings table (Layer 1)
+│   ├── store/
+│   │   ├── interface.go       ← BindingStore interface
+│   │   ├── postgres.go        ← pgx/v5 implementation
+│   │   └── cached.go          ← write-through sync.Map cache wrapper
+│   └── checker/
+│       ├── interface.go       ← PermissionChecker interface
+│       └── checker.go         ← two-phase check implementation
+├── api/
+│   └── openapi.yaml           ← proposed binding management API
+├── bench_test.go              ← Go benchmarks (DB, cache, invalidation)
+├── docker-compose.yaml        ← single-node PostgreSQL
 ├── go.mod
 ├── go.sum
 ├── README.md
 └── FINDINGS.md
 ```
 
-### Rego Policy Structure to Test
-The Rego module should use this package structure (so CF-IAM Task 1.3 knows what to implement):
-
-```rego
-package cloudforge.iam.v1
-
-import future.keywords.if
-import future.keywords.in
-
-# Principal types: user, service_account, ai_serving_endpoint, ai_training_job
-default allow = false
-
-allow if {
-    principal := input.principal
-    action    := input.action
-    resource  := input.resource
-
-    tenant_match(principal, resource)
-    policy_allows(principal, action, resource)
-}
-
-tenant_match(principal, resource) if {
-    principal.tenant == resource.tenant
-}
-```
-
 ### Spike Fails If
-- p99 embedded evaluation latency exceeds 10ms for a 50-policy bundle
-- OPA cannot load policy bundles incrementally (every policy change requires full restart)
+- p99 PostgreSQL binding check latency exceeds 1 ms under realistic load
+- Cache invalidation via NATS event takes longer than 500 ms to propagate
+- Cross-tenant binding cannot be reliably rejected at both the API and checker layers
+- The Go structural rules table is judged insufficient for v1 and a policy language is required (this is not a failure of the spike, but it changes the Phase 1 implementation scope significantly)
 
 ### Go Libraries for This Spike
 ```
-github.com/open-policy-agent/opa/v1/rego
+github.com/jackc/pgx/v5
+github.com/google/uuid
+github.com/nats-io/nats.go
+github.com/stretchr/testify
 ```
 
 ---

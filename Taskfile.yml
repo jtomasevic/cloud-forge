@@ -9,11 +9,12 @@ tasks:
   # ── Dev cluster lifecycle ────────────────────────────────────────────────────
 
   dev:up:
-    desc: Start local k3d cluster and bootstrap base infrastructure
+    desc: Start local k3d cluster, bootstrap base infrastructure, and deploy ScyllaDB
     cmds:
       - k3d cluster create --config deploy/k3d/cluster.yaml
-      - kubectl apply -f deploy/kustomize/base/namespaces.yaml
+      - kubectl apply -k deploy/kustomize/base/
       - bash scripts/dev-bootstrap.sh
+      - task: deploy:scylladb
 
   dev:down:
     desc: Stop and delete local k3d cluster
@@ -38,6 +39,59 @@ tasks:
     desc: "Deploy a named CloudForge component. Usage: task deploy:component -- cf-iam"
     cmds:
       - helm upgrade --install {{.CLI_ARGS}} deploy/helm/components/{{.CLI_ARGS}} -n cf-system --create-namespace
+
+  # ── ScyllaDB ─────────────────────────────────────────────────────────────────
+
+  deploy:scylladb:
+    desc: Install Scylla Operator (Helm) and provision the dev ScyllaDB cluster and schema
+    vars:
+      SCYLLA_OPERATOR_VERSION: "1.15.0"
+    cmds:
+      - echo "── Adding ScyllaDB Helm repo ────────────────────────────────────────"
+      - helm repo add scylladb https://storage.googleapis.com/scylla-operator-charts/stable --force-update
+      - helm repo update scylladb
+      - echo "── Installing / upgrading Scylla Operator v{{.SCYLLA_OPERATOR_VERSION}} ──"
+      - helm upgrade --install scylla-operator scylladb/scylla-operator
+          --namespace scylla-operator
+          --create-namespace
+          --version {{.SCYLLA_OPERATOR_VERSION}}
+          -f deploy/helm/components/scylla-operator/values.yaml
+          --wait
+      - echo "── Applying ScyllaDB cluster and schema resources ───────────────────"
+      - kubectl apply -k deploy/kustomize/components/scylladb/
+      - task: wait:scylladb
+
+  wait:scylladb:
+    desc: Wait for ScyllaDB cluster Available condition and schema init Job to complete
+    cmds:
+      - echo "Waiting for ScyllaCluster cloudforge-scylla to become Available (up to 5 min)..."
+      - kubectl wait scyllacluster/cloudforge-scylla
+          --for='condition=Available'
+          --timeout=300s
+          -n cf-data
+      - echo "Waiting for schema init Job to complete (up to 2 min)..."
+      - kubectl wait job/scylladb-schema-init
+          --for=condition=complete
+          --timeout=120s
+          -n cf-data
+      - echo "✓ ScyllaDB is ready."
+
+  scylladb:status:
+    desc: Show ScyllaDB cluster and pod status
+    cmds:
+      - echo "── ScyllaCluster ───────────────────────────────────────────────────"
+      - kubectl get scyllacluster -n cf-data
+      - echo "── Pods ────────────────────────────────────────────────────────────"
+      - kubectl get pods -n cf-data -l scylla/cluster=cloudforge-scylla
+      - echo "── Schema init Job ─────────────────────────────────────────────────"
+      - kubectl get job scylladb-schema-init -n cf-data 2>/dev/null || echo "(not yet deployed)"
+
+  undeploy:scylladb:
+    desc: Remove ScyllaDB cluster, schema resources, and Scylla Operator
+    cmds:
+      - kubectl delete -k deploy/kustomize/components/scylladb/ --ignore-not-found
+      - helm uninstall scylla-operator -n scylla-operator --ignore-not-found
+      - kubectl delete namespace scylla-operator --ignore-not-found
 
   # ── Code generation ──────────────────────────────────────────────────────────
 

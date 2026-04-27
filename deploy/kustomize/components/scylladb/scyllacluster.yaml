@@ -1,0 +1,54 @@
+# Single-node ScyllaDB cluster for the CloudForge local dev environment.
+#
+# Key dev-specific settings:
+#   developerMode: true  — disables kernel checks (huge pages, CPU governor)
+#                          that k3d Docker nodes cannot satisfy.  MUST be
+#                          false in production.
+#   members: 1           — single node; production uses >= 3 across racks.
+#   storageClassName: local-path  — k3d default; production uses NVMe SSD class.
+#
+# The ScyllaCluster is managed by the Scylla Operator (installed via Helm).
+# After creation the operator provisions the following Services in cf-data:
+#   cloudforge-scylla              — headless for pod DNS
+#   cloudforge-scylla-client       — ClusterIP for CQL connections (port 9042)
+apiVersion: scylla.scylladb.com/v1
+kind: ScyllaCluster
+metadata:
+  name: cloudforge-scylla
+  namespace: cf-data
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: scylladb
+spec:
+  version: "6.2.2"
+  agentVersion: "3.3.0"
+
+  # developerMode bypasses OS-level tuning checks that are impossible inside
+  # a Docker container.  Remove this flag entirely for production deployments.
+  developerMode: true
+
+  datacenter:
+    name: local
+    racks:
+      - name: rack1
+        # Mount the cloudforge-scylla-config ConfigMap as /etc/scylla/scylla.yaml
+        # to apply authenticator and authorizer settings.
+        scyllaConfig: cloudforge-scylla-config
+
+        storage:
+          # 10 Gi is sufficient for dev-scale binding data.
+          # local-path is the k3d default StorageClass — no PersistentVolume
+          # configuration required.
+          capacity: 10Gi
+          storageClassName: local-path
+
+        # Single member keeps resource usage low on developer laptops.
+        members: 1
+
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
