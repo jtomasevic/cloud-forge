@@ -1,0 +1,16 @@
+# Scylla Operator Helm values — CloudForge dev cluster
+#
+# These are minimal overrides for the local k3d environment.
+# Production values are managed by CF-DBController in Phase 4.
+#
+# Helm chart: scylladb/scylla-operator
+# Reference:  https://operator.docs.scylladb.com/stable/helm-install.html
+
+# Log level: 2 = INFO. Use 4 for DEBUG when diagnosing operator issues.
+logLevel: 2
+
+# Disable webhooks cert rotation in dev — cert-manager may not be installed yet.
+# Production must keep this enabled.
+webhooks:
+  certManager:
+    enabled: false

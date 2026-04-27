@@ -1,0 +1,73 @@
+# Schema initialisation Job for the CloudForge ScyllaDB cluster.
+#
+# Runs once after ScyllaDB becomes available and applies schema.cql to create:
+#   - cloudforge_platform keyspace
+#   - resource_bindings table
+#   - resource_bindings_by_target materialized view
+#   - cloudforge_svc service account
+#
+# The Job is idempotent: all DDL statements use IF NOT EXISTS / IF NOT EXISTS,
+# so re-running after a partial failure is safe.
+#
+# The CQL file is injected via the scylladb-schema-cql ConfigMap, which is
+# generated from schema.cql by the kustomize configMapGenerator in
+# kustomization.yaml.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scylladb-schema-init
+  namespace: cf-data
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: scylladb-schema
+  annotations:
+    # Bump this version string whenever schema.cql changes to indicate that
+    # a manual re-run (delete old Job + kubectl apply) is needed.
+    cloudforge.io/schema-version: "0.1.0"
+spec:
+  # Remove completed pod after 5 minutes to keep the namespace tidy.
+  ttlSecondsAfterFinished: 300
+  # Retry up to 10 times while ScyllaDB is still booting / electing a leader.
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait for the ScyllaDB CQL port to accept connections before running
+        # the DDL.  Without this guard, cqlsh fails immediately if the
+        # ScyllaDB pod is still in the Starting phase.
+        - name: wait-for-scylla
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for ScyllaDB CQL port on cloudforge-scylla-client.cf-data.svc.cluster.local:9042..."
+              until nc -z cloudforge-scylla-client.cf-data.svc.cluster.local 9042; do
+                echo "  not yet reachable — retrying in 5s"; sleep 5;
+              done
+              echo "ScyllaDB CQL port is open."
+      containers:
+        # Use the official ScyllaDB image so cqlsh is always version-matched
+        # to the server.  The container runs the schema file and exits.
+        - name: cqlsh
+          image: scylladb/scylla:6.2.2
+          command:
+            - cqlsh
+            - cloudforge-scylla-client.cf-data.svc.cluster.local
+            - "9042"
+            - --username=cassandra
+            - --password=cassandra
+            - -f
+            - /schema/schema.cql
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+      volumes:
+        - name: schema
+          configMap:
+            # Name matches configMapGenerator entry in kustomization.yaml
+            # with disableNameSuffixHash: true so the name is stable.
+            name: scylladb-schema-cql

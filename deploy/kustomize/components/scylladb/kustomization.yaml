@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# All resources that make up the ScyllaDB platform component.
+# Applied by: kubectl apply -k deploy/kustomize/components/scylladb/
+# Or via Makefile: make deploy-scylladb
+resources:
+  - config.yaml
+  - scyllacluster.yaml
+  - init-job.yaml
+
+# Generate the schema ConfigMap from the raw CQL file so kustomize tracks
+# it as a first-class resource.  disableNameSuffixHash keeps the name stable
+# so the init-job.yaml volume reference doesn't need a hash suffix.
+configMapGenerator:
+  - name: scylladb-schema-cql
+    namespace: cf-data
+    files:
+      - schema.cql
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: cloudforge
+        cloudforge.io/component: scylladb-schema

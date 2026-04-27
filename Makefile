@@ -24,10 +24,11 @@ tools-check: ## Verify required dev tools are installed; install missing ones vi
 	@bash scripts/tools-check.sh
 
 .PHONY: dev-up
-dev-up: tools-check ## Start local k3d cluster and bootstrap base infrastructure
+dev-up: tools-check ## Start local k3d cluster, bootstrap infrastructure, and deploy ScyllaDB
 	k3d cluster create --config deploy/k3d/cluster.yaml
 	kubectl apply -k deploy/kustomize/base/
 	bash scripts/dev-bootstrap.sh
+	$(MAKE) deploy-scylladb
 
 .PHONY: dev-down
 dev-down: ## Stop and delete local k3d cluster
@@ -40,6 +41,81 @@ dev-reset: dev-down dev-up ## Destroy and recreate local cluster from scratch
 dev-status: ## Show cluster node and pod status
 	k3d cluster list
 	kubectl get pods -A
+
+# ── ScyllaDB ──────────────────────────────────────────────────────────────────
+
+##@ ScyllaDB
+
+SCYLLA_OPERATOR_VERSION ?= 1.15.0
+
+.PHONY: deploy-scylladb
+deploy-scylladb: ## Install Scylla Operator (Helm) and provision the dev ScyllaDB cluster
+	@echo "── Adding ScyllaDB Helm repo ────────────────────────────────────────"
+	helm repo add scylladb https://storage.googleapis.com/scylla-operator-charts/stable --force-update
+	helm repo update scylladb
+	@echo "── Installing / upgrading Scylla Operator v$(SCYLLA_OPERATOR_VERSION) ──"
+	helm upgrade --install scylla-operator scylladb/scylla-operator \
+		--namespace scylla-operator \
+		--create-namespace \
+		--version $(SCYLLA_OPERATOR_VERSION) \
+		-f deploy/helm/components/scylla-operator/values.yaml \
+		--wait
+	@echo "── Applying ScyllaDB cluster and schema resources ───────────────────"
+	kubectl apply -k deploy/kustomize/components/scylladb/
+	@echo "── Waiting for cluster and schema init ─────────────────────────────"
+	$(MAKE) wait-scylladb
+
+.PHONY: wait-scylladb
+wait-scylladb: ## Wait for ScyllaDB cluster to become Available and schema init Job to complete
+	@echo "Waiting for ScyllaCluster cloudforge-scylla to become Available (up to 5 min)..."
+	kubectl wait scyllacluster/cloudforge-scylla \
+		--for='condition=Available' \
+		--timeout=300s \
+		-n cf-data
+	@echo "Waiting for schema init Job to complete (up to 2 min)..."
+	kubectl wait job/scylladb-schema-init \
+		--for=condition=complete \
+		--timeout=120s \
+		-n cf-data
+	@echo "✓ ScyllaDB is ready."
+
+.PHONY: scylladb-status
+scylladb-status: ## Show ScyllaDB cluster and pod status
+	@echo "── ScyllaCluster ───────────────────────────────────────────────────"
+	kubectl get scyllacluster -n cf-data
+	@echo ""
+	@echo "── Pods ────────────────────────────────────────────────────────────"
+	kubectl get pods -n cf-data -l scylla/cluster=cloudforge-scylla
+	@echo ""
+	@echo "── Schema init Job ─────────────────────────────────────────────────"
+	kubectl get job scylladb-schema-init -n cf-data 2>/dev/null || echo "(not yet deployed)"
+
+.PHONY: scylladb-shell
+scylladb-shell: ## Open a cqlsh session to the dev ScyllaDB cluster (requires cluster running)
+	@echo "Connecting as cloudforge_svc to cloudforge_platform keyspace..."
+	@echo "Tip: use CF_SCYLLA_PASSWORD env var to override the dev default password."
+	kubectl exec -it -n cf-data \
+		$$(kubectl get pod -n cf-data -l scylla/cluster=cloudforge-scylla -o jsonpath='{.items[0].metadata.name}') \
+		-- cqlsh localhost 9042 \
+		-u cloudforge_svc \
+		-p $${CF_SCYLLA_PASSWORD:-cf-dev-secret-change-in-prod} \
+		--keyspace cloudforge_platform
+
+.PHONY: scylladb-local-shell
+scylladb-local-shell: ## Open a local cqlsh session via the exposed port 9042 (requires cqlsh installed)
+	@which cqlsh > /dev/null || (echo "cqlsh not found — install: pip install cqlsh" && exit 1)
+	cqlsh localhost 9042 \
+		-u cloudforge_svc \
+		-p $${CF_SCYLLA_PASSWORD:-cf-dev-secret-change-in-prod} \
+		--keyspace cloudforge_platform
+
+.PHONY: undeploy-scylladb
+undeploy-scylladb: ## Remove ScyllaDB cluster, schema resources, and operator
+	@echo "── Removing ScyllaDB cluster and schema resources ───────────────────"
+	kubectl delete -k deploy/kustomize/components/scylladb/ --ignore-not-found
+	@echo "── Removing Scylla Operator ────────────────────────────────────────"
+	helm uninstall scylla-operator -n scylla-operator --ignore-not-found
+	kubectl delete namespace scylla-operator --ignore-not-found
 
 # ── Component deployment ──────────────────────────────────────────────────────
 
