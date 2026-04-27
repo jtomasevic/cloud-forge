@@ -532,9 +532,22 @@ func IsNotFound(err error) bool
 
 **API surface:**
 ```go
-// Chain returns a chi-compatible middleware chain with all standard middlewares applied.
-func Chain(tracer trace.Tracer, logger *slog.Logger, registry *prometheus.Registry) chi.Middlewares
-
+// Chain returns a [Middlewares] slice with all standard CloudForge middlewares
+// pre-wired in the correct execution order.
+//
+// Prerequisites:
+//   - [tracing.Init] must have been called before Chain is invoked so the
+//     globally-registered OTel provider is in place for [OTelSpan].
+//
+// Parameters:
+//   - logger:   structured logger from logging.New(...)
+//   - registry: Prometheus registry from metrics.NewRegistry(...)
+//   - svcName:  service name used to namespace Prometheus metric labels
+func Chain(
+	logger *slog.Logger,
+	registry *prometheus.Registry,
+	svcName string,
+) Middlewares
 // TenantFromContext extracts the tenant from context injected by TenantContext middleware.
 func TenantFromContext(ctx context.Context) (tenant, project string, ok bool)
 ```
@@ -585,7 +598,6 @@ go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
 github.com/prometheus/client_golang
 github.com/spf13/viper
 github.com/go-playground/validator/v10
-github.com/go-chi/chi/v5
 github.com/google/uuid
 github.com/testcontainers/testcontainers-go
 github.com/jackc/pgx/v5
@@ -640,7 +652,7 @@ use. The pattern must be working and documented before Phase 1 begins.
 # api/<service>/v1/oapi-server.cfg.yaml
 package: generated
 generate:
-  # "std-http-server" emits a StrictServerInterface wired to net/http — no chi dependency.
+  # "std-http-server" emits a StrictServerInterface wired to net/http
   std-http-server: true
   strict-server: true
   models: true
@@ -652,7 +664,7 @@ output-options:
 
 > `std-http-server` was added in `oapi-codegen` v2.1. It generates an `http.Handler`-compatible
 > adapter that registers routes on a plain `*http.ServeMux` using Go 1.22 method+path patterns
-> (`GET /storage/v1/{tenant}/{project}/buckets`). Do **not** use `chi-server: true`.
+> (`GET /storage/v1/{tenant}/{project}/buckets`). 
 
 **oapi-codegen client config template:**
 ```yaml
@@ -743,14 +755,14 @@ func errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 - Show that the server compiles and paths like `/storage/v1/acme/my-project/buckets` route correctly
 
 ### Acceptance Criteria
-- [ ] `make gen-api SERVICE=storage` generates valid, compilable Go code with **no `chi` import**
-- [ ] The generated `server.gen.go` imports only `net/http` (verify: `grep -r "go-chi" services/storage/generated/` returns empty)
+- [ ] `make gen-api SERVICE=storage` generates valid, compilable Go code with pure go, no third parties
+- [ ] The generated `server.gen.go` imports only `net/http`
 - [ ] Routes are registered using `http.NewServeMux()` with Go 1.22 `METHOD /path/{param}` patterns
 - [ ] Path values are read with `r.PathValue("tenant")`, consistent with `internal/middleware/tenant.go`
 - [ ] The middleware chain from `internal/middleware` wraps the mux (request-ID, logger, metrics, panic recovery)
 - [ ] The generated client in `pkg/client/storage/` compiles and has typed methods matching the spec
 - [ ] Adding a new endpoint to the spec and re-running `make gen-api SERVICE=storage` updates the generated code correctly
-- [ ] `docs/plan/api-first-pattern.md` documents the full workflow for a new engineer, explicitly noting the `std-http-server` config option and the no-chi rule
+- [ ] `docs/plan/api-first-pattern.md` documents the full workflow for a new engineer, explicitly noting the `std-http-server` config option.
 
 ---
 

@@ -1,0 +1,118 @@
+# =============================================================================
+# Docker Compose — 3-Node NATS JetStream Cluster
+# CloudForge Spike 0.6 — NATS Multi-Tenant Routing
+# =============================================================================
+#
+# TOPOLOGY
+# --------
+#   nats-1  :4222 (client)  :8222 (monitoring)  :6222 (cluster route)
+#   nats-2  :4223 (client)  :8223 (monitoring)  :6222 (cluster route)
+#   nats-3  :4224 (client)  :8224 (monitoring)  :6222 (cluster route)
+#
+# All nodes share the same ./nats.conf for accounts and JetStream settings.
+# Cluster-specific options (server_name, cluster routes) are injected via
+# command-line flags so a single config file can serve all nodes.
+#
+# JetStream replicas = 3 for streams, meaning every message is replicated
+# across all three nodes — data survives the loss of any one node.
+#
+# USAGE
+#   docker compose -f config/nats-cluster.yaml up -d
+#   docker compose -f config/nats-cluster.yaml logs -f
+#   docker compose -f config/nats-cluster.yaml down -v   # also removes volumes
+#
+# The Go program (cmd/main.go) connects to nats://localhost:4222 by default.
+# It can also be pointed at :4223 or :4224 to test failover.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Node 1 — primary client endpoint used by the Go test program.
+  # ---------------------------------------------------------------------------
+  nats-1:
+    image: nats:2.10-alpine
+    container_name: nats-1
+    restart: unless-stopped
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # HTTP monitoring  (GET /varz, /jsz, /accountz, /connz)
+    volumes:
+      - ./nats.conf:/config/nats.conf:ro   # shared account + JetStream config
+      - nats1-data:/data/jetstream          # persistent JetStream store
+    command:
+      - "-c"
+      - "/config/nats.conf"
+      - "--server_name=nats-1"
+      - "--cluster_name=cloudforge"
+      - "--cluster=nats://0.0.0.0:6222"
+      # Routes connect to the other two nodes by service name.
+      # Docker Compose DNS resolves these automatically.
+      - "--routes=nats://nats-2:6222,nats://nats-3:6222"
+      - "--http_port=8222"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Node 2 — replica node.
+  # ---------------------------------------------------------------------------
+  nats-2:
+    image: nats:2.10-alpine
+    container_name: nats-2
+    restart: unless-stopped
+    ports:
+      - "4223:4222"
+      - "8223:8222"
+    volumes:
+      - ./nats.conf:/config/nats.conf:ro
+      - nats2-data:/data/jetstream
+    command:
+      - "-c"
+      - "/config/nats.conf"
+      - "--server_name=nats-2"
+      - "--cluster_name=cloudforge"
+      - "--cluster=nats://0.0.0.0:6222"
+      - "--routes=nats://nats-1:6222,nats://nats-3:6222"
+      - "--http_port=8222"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Node 3 — replica node.
+  # ---------------------------------------------------------------------------
+  nats-3:
+    image: nats:2.10-alpine
+    container_name: nats-3
+    restart: unless-stopped
+    ports:
+      - "4224:4222"
+      - "8224:8222"
+    volumes:
+      - ./nats.conf:/config/nats.conf:ro
+      - nats3-data:/data/jetstream
+    command:
+      - "-c"
+      - "/config/nats.conf"
+      - "--server_name=nats-3"
+      - "--cluster_name=cloudforge"
+      - "--cluster=nats://0.0.0.0:6222"
+      - "--routes=nats://nats-1:6222,nats://nats-2:6222"
+      - "--http_port=8222"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+# Named volumes keep JetStream data between `docker compose up/down` runs.
+# Use `docker compose down -v` to wipe and start fresh.
+volumes:
+  nats1-data:
+  nats2-data:
+  nats3-data:
