@@ -2,6 +2,8 @@ CLUSTER       ?= cloudforge-dev
 BINARY        := bin/bench
 SCYLLADB_HOST ?= 127.0.0.1
 SCYLLADB_PORT ?= 9042
+SCYLLADB_USER ?= cassandra
+SCYLLADB_PASS ?= cassandra
 # Schema path relative to the working directory where `make run` is executed.
 SCHEMA        := schema/schema.cql
 
@@ -58,8 +60,8 @@ destroy: ## Drop the cf keyspace from ScyllaDB (clean up spike data)
 	@echo "── Dropping cf keyspace ─────────────────────────────────────────────────────"
 	kubectl exec -n cf-data \
 	  $$(kubectl get pod -n cf-data -l scylla/cluster=cloudforge-scylla -o jsonpath='{.items[0].metadata.name}') \
-	  -- cqlsh -e "DROP KEYSPACE IF EXISTS cf;" \
-	  || echo "Hint: run 'cqlsh 127.0.0.1 $(SCYLLADB_PORT)' and execute DROP KEYSPACE IF EXISTS cf;"
+	  -- cqlsh -u $(SCYLLADB_USER) -p $(SCYLLADB_PASS) -e "DROP KEYSPACE IF EXISTS cf;" \
+	  || echo "Hint: run 'cqlsh 127.0.0.1 $(SCYLLADB_PORT) -u $(SCYLLADB_USER) -p $(SCYLLADB_PASS)' and execute DROP KEYSPACE IF EXISTS cf;"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build
@@ -99,11 +101,11 @@ test-integration: build ## Run integration tests (requires ScyllaDB at SCYLLADB_
 .PHONY: apply-schema
 apply-schema: ## Apply schema.cql to the running ScyllaDB (via cqlsh)
 	@echo "── Applying schema/schema.cql ───────────────────────────────────────────────"
-	cqlsh $(SCYLLADB_HOST) $(SCYLLADB_PORT) -f $(SCHEMA)
+	cqlsh $(SCYLLADB_HOST) $(SCYLLADB_PORT) -u $(SCYLLADB_USER) -p $(SCYLLADB_PASS) -f $(SCHEMA)
 
 .PHONY: describe-schema
 describe-schema: ## Describe the cf keyspace tables via cqlsh
-	cqlsh $(SCYLLADB_HOST) $(SCYLLADB_PORT) \
+	cqlsh $(SCYLLADB_HOST) $(SCYLLADB_PORT) -u $(SCYLLADB_USER) -p $(SCYLLADB_PASS) \
 	  -e "DESCRIBE KEYSPACE cf;"
 
 # ─────────────────────────────────────────────────────────────────────────────
