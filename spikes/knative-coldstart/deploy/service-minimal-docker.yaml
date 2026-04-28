@@ -1,0 +1,51 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fn-minimal
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: cloudforge-spike
+    cloudforge.io/spike: "0.8-coldstart"
+    cloudforge.io/variant: minimal
+spec:
+  template:
+    metadata:
+      annotations:
+        # min-scale=0 enables scale-to-zero; Knative will terminate all pods
+        # when the function is idle for longer than window + grace-period.
+        autoscaling.knative.dev/min-scale: "0"
+        # initial-scale=0 requires allow-zero-initial-scale=true in config-autoscaler
+        # (patched by make deploy-knative / make run).
+        autoscaling.knative.dev/initial-scale: "0"
+        # window=6s: Knative's minimum stable-window.  Reduces idle detection
+        # from the 60s cluster default so each benchmark sample takes ~16s
+        # instead of ~90s.
+        autoscaling.knative.dev/window: "6s"
+        # After deciding to scale down, Knative waits this long before killing
+        # the pod to drain in-flight requests.
+        autoscaling.knative.dev/scale-to-zero-grace-period: "10s"
+    spec:
+      containers:
+        - image: dev.local/fn-minimal:spike
+          # dev.local prefix: Knative skips remote digest resolution
+          # (config-deployment: registries-skipping-tag-resolving=dev.local).
+          # imagePullPolicy: Never: kubelet uses the k3d-imported image.
+          imagePullPolicy: Never
+          ports:
+            - name: http1
+              containerPort: 8080
+          # Do NOT set PORT — Knative injects it; the webhook rejects it if set.
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 1
+            failureThreshold: 10

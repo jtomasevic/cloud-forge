@@ -28,5 +28,9 @@ kubeconfig
 .idea/
 .vscode/
 
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
 # specs (local scratch directory)
 /specs

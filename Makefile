@@ -37,7 +37,15 @@ dev-down: ## Stop and delete local k3d cluster
 .PHONY: dev-reset
 dev-reset: dev-down dev-up ## Destroy and recreate local cluster from scratch
 
-.PHONY: dev-status
+.PHONY: deploy-knative
+deploy-knative: ## Install Knative Serving + net-kourier on the dev cluster
+	$(MAKE) -C spikes/knative-coldstart deploy-knative
+
+.PHONY: measure-coldstart
+measure-coldstart: ## Run scale-to-zero cold-start benchmark (requires deploy-knative first)
+	$(MAKE) -C spikes/knative-coldstart measure
+
+
 dev-status: ## Show cluster node and pod status
 	k3d cluster list
 	kubectl get pods -A

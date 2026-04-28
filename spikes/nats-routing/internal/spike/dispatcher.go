@@ -65,7 +65,7 @@ func NewDefaultRoutes() map[string]RouteHandler {
 }
 
 // HandleBucketCreated handles "com.cloudforge.bucket.created" events.
-// In production this would enqueue a MinIO MakeBucket call.
+// In production this would enqueue a 	 MakeBucket call.
 func HandleBucketCreated(ev CloudEvent, logger interface{ Info(string, ...any) }) {
 	logger.Info("→ handleBucketCreated",
 		"id", ev.ID,
