@@ -4,4 +4,5 @@ use (
 	.
 	./spikes/nats-routing
 	./spikes/knative-coldstart
+	./spikes/scylladb-accounts
 )
