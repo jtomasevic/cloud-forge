@@ -1547,6 +1547,533 @@ github.com/stretchr/testify
 
 ---
 
+## Task 0.8 — Spike: Knative Scale-to-Zero Cold Start
+
+### Goal
+
+Install Knative Serving on the local k3d dev cluster, deploy three function variants
+(minimal / medium / heavy), force each to scale to zero, then send a cold request
+and record time-to-first-byte. A Go measurement tool collects 10 samples per variant
+and prints a terminal performance table.
+
+The output drives one platform decision:
+> **What is the default `minScale` value in CF-FunctionTrigger for each function
+> weight class, and when must users explicitly set `minScale: 1`?**
+
+---
+
+### Context
+
+CF-FunctionTrigger (Phase 6) wraps every consumer workload as a Knative `Service`.
+`scale-to-zero` is on by default. A function that has been idle for 30 seconds is
+terminated — the next request pays the full cold-start cost:
+
+```
+Request arrives
+    → Autoscaler detects 0 ready pods
+    → Kubernetes schedules a new pod
+    → Container runtime pulls image (if not in node cache)
+    → Process starts, HTTP server binds
+    → Request is forwarded and answered
+```
+
+For AI-calling functions this chain can take 3–8 seconds depending on image size
+and memory footprint. This spike produces the data needed to write accurate
+platform documentation and set safe defaults.
+
+---
+
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Task 0.3 complete | `cloudforge-dev` k3d cluster running, port 9080→80 exposed on loadbalancer |
+| `kubectl` context set to `cloudforge-dev` | `kubectl config current-context` must return `k3d-cloudforge-dev` |
+| Docker daemon running | Knative images are ~600 MB total; image pull happens once |
+| `ko` installed | `go install github.com/ko-build/ko/cmd/ko@latest` — used to build function images into the cluster |
+
+---
+
+### Outputs / Deliverables
+
+| Deliverable | Path | Description |
+|---|---|---|
+| Knative Serving install manifests | `spikes/knative-coldstart/deploy/knative-serving.yaml` | Serving CRDs + core components |
+| Kourier networking | `spikes/knative-coldstart/deploy/knative-net-kourier.yaml` | Lightweight ingress gateway |
+| Domain config patch | `spikes/knative-coldstart/deploy/config-domain.yaml` | Sets `127.0.0.1.sslip.io` magic DNS |
+| Minimal function | `spikes/knative-coldstart/functions/minimal/main.go` | Pure Go handler, distroless image |
+| Medium function | `spikes/knative-coldstart/functions/medium/main.go` | Go handler + embedded 50 MB payload |
+| Heavy function | `spikes/knative-coldstart/functions/heavy/main.go` | Go handler + embedded 200 MB payload |
+| Knative service manifests | `spikes/knative-coldstart/deploy/service-*.yaml` | One per variant, scale-to-zero config |
+| Measurement tool | `spikes/knative-coldstart/cmd/measure/main.go` | Collects samples, prints performance table |
+| Makefile | `spikes/knative-coldstart/Makefile` | `deploy-knative`, `deploy-functions`, `measure`, `teardown` |
+| Findings | `spikes/knative-coldstart/FINDINGS.md` | Results + min-replica recommendations |
+
+---
+
+### Step 1 — Install Knative Serving on k3d
+
+Use the standalone YAML manifests (no Knative Operator) to minimise cluster
+resource usage. Knative v1.15.x targets Kubernetes ≥ 1.27 which k3d easily satisfies.
+
+```bash
+# 1a. Install Serving CRDs
+kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.15.0/serving-crds.yaml
+
+# 1b. Install Serving core components (in knative-serving namespace)
+kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.15.0/serving-core.yaml
+
+# 1c. Install net-kourier (lightweight ingress — works with k3d, no Istio/Envoy gateway needed)
+kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.15.0/kourier.yaml
+
+# 1d. Tell Knative Serving to use Kourier
+kubectl patch configmap/config-network \
+  --namespace knative-serving \
+  --type merge \
+  --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+
+# 1e. Configure magic DNS so service URLs resolve on localhost.
+#     sslip.io resolves *.127.0.0.1.sslip.io → 127.0.0.1.
+#     k3d already maps host:9080 → cluster:80 (loadbalancer).
+kubectl apply -f deploy/config-domain.yaml
+```
+
+`deploy/config-domain.yaml`:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-domain
+  namespace: knative-serving
+data:
+  # Any service deployed to the cluster is accessible at:
+  # http://<service>.<namespace>.127.0.0.1.sslip.io:9080
+  # The :9080 port matches the k3d loadbalancer mapping port: "9080:80"
+  127.0.0.1.sslip.io: ""
+```
+
+Download manifests once and vendor them into the spike directory so the spike
+works offline and at a pinned version:
+
+```bash
+mkdir -p spikes/knative-coldstart/deploy
+curl -sLo spikes/knative-coldstart/deploy/knative-serving.yaml \
+  https://github.com/knative/serving/releases/download/knative-v1.15.0/serving-core.yaml
+curl -sLo spikes/knative-coldstart/deploy/knative-net-kourier.yaml \
+  https://github.com/knative/net-kourier/releases/download/knative-v1.15.0/kourier.yaml
+```
+
+Wait for all Knative pods to be ready before deploying functions:
+
+```bash
+kubectl wait deployment --all \
+  --for=condition=Available \
+  --timeout=120s \
+  -n knative-serving
+```
+
+---
+
+### Step 2 — Function Variants
+
+Each variant is a standalone Go HTTP handler. The image size is controlled by
+embedding a synthetic binary file of the target size using Go's `//go:embed` directive.
+This simulates real-world functions that carry model weights, ML libraries, or
+embedded assets.
+
+**Minimal (`functions/minimal/main.go`)** — target image size < 10 MB:
+
+```go
+// Package main is the CloudForge spike "minimal" function variant.
+// It serves a single HTTP endpoint that echoes the request method and path.
+// Built with ko using gcr.io/distroless/static-debian12 as the base — no shell,
+// no package manager, minimal attack surface.
+package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+)
+
+func main() {
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "8080"
+    }
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "variant=minimal method=%s path=%s\n", r.Method, r.URL.Path)
+    })
+    log.Printf("minimal function listening on :%s", port)
+    log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+```
+
+**Medium (`functions/medium/main.go`)** — target image ~100 MB:
+
+```go
+// Package main is the CloudForge spike "medium" function variant.
+// It embeds a 50 MB synthetic binary file to simulate a function that carries
+// a small ML model or embedded asset. Image size is ~100 MB (ubuntu base).
+package main
+
+import (
+    _ "embed"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+)
+
+// payload is a 50 MB file generated by `make gen-payloads`.
+// The Go compiler embeds it at build time — no runtime file I/O needed.
+//
+//go:embed payload.bin
+var payload []byte
+
+func main() {
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "8080"
+    }
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        // Access one byte to prevent the compiler from optimising away the embed.
+        fmt.Fprintf(w, "variant=medium payload_len=%d method=%s\n", len(payload), r.Method)
+    })
+    log.Printf("medium function listening on :%s (payload %d bytes)", port, len(payload))
+    log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+```
+
+**Heavy (`functions/heavy/main.go`)** — target image ~500 MB:
+
+```go
+// Package main is the CloudForge spike "heavy" function variant.
+// Embeds a 200 MB synthetic binary to simulate a function bundling a large model
+// checkpoint or a native shared library. Image size is ~500 MB.
+//
+//go:embed payload.bin
+var payload []byte
+// … (same handler pattern as medium)
+```
+
+Generate the payload files in the Makefile:
+
+```makefile
+gen-payloads: ## Generate synthetic payload files for medium and heavy variants
+    dd if=/dev/urandom of=functions/medium/payload.bin bs=1M count=50
+    dd if=/dev/urandom of=functions/heavy/payload.bin  bs=1M count=200
+```
+
+---
+
+### Step 3 — Knative Service Manifests
+
+One `Knative Service` per variant. Critical settings for the spike:
+- `autoscaling.knative.dev/min-scale: "0"` — forces scale-to-zero.
+- `autoscaling.knative.dev/initial-scale: "0"` — starts at zero; no warm replica.
+- `autoscaling.knative.dev/scale-to-zero-grace-period: "30s"` — idle window before termination.
+
+`deploy/service-minimal.yaml`:
+
+```yaml
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fn-minimal
+  namespace: default
+  annotations:
+    # Force scale-to-zero so each measurement round starts from a cold pod.
+    autoscaling.knative.dev/min-scale: "0"
+    autoscaling.knative.dev/initial-scale: "0"
+    autoscaling.knative.dev/scale-to-zero-grace-period: "30s"
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "0"
+    spec:
+      containers:
+        # ko builds the image and pushes it into the k3d container registry.
+        # Replace the image tag with the ko-built digest before applying.
+        - image: ko://github.com/jtomasevic/cloud-forge/spikes/knative-coldstart/functions/minimal
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+```
+
+Repeat for `service-medium.yaml` and `service-heavy.yaml` with appropriate
+memory limits (medium: 256 Mi, heavy: 768 Mi) and the matching `ko://` image path.
+
+---
+
+### Step 4 — Measurement Tool
+
+`cmd/measure/main.go` drives the benchmark. It must:
+
+1. Accept a `--service` flag (`minimal | medium | heavy | all`) and a `--samples` flag (default 10).
+2. Before each sample — wait for the pod count to reach zero by polling the Knative
+   service's `status.observedGeneration` and the underlying deployment's `readyReplicas`.
+3. Send an HTTP `GET` to the Knative service URL and measure the duration from
+   request start to reading the first byte of the response (time-to-first-byte, TTFB).
+4. After all samples, compute p50 / p75 / p95 / p99 / min / max, then print the
+   table (see expected terminal output below).
+5. Exit non-zero if any p95 exceeds its threshold so `make measure` can fail CI.
+
+Key implementation pattern for TTFB measurement:
+
+```go
+// measureTTFB sends a single GET request and returns the time elapsed from
+// connection start to the moment the first byte of the response body is available.
+// It does NOT read the full body — Knative counts the connection as active until
+// the body is fully read, which would prevent scale-to-zero in subsequent rounds.
+func measureTTFB(ctx context.Context, url string) (time.Duration, error) {
+    start := time.Now()
+    req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return 0, err
+    }
+    // Read exactly one byte — this is the moment the HTTP server has responded.
+    buf := make([]byte, 1)
+    _, err = resp.Body.Read(buf)
+    resp.Body.Close()
+    return time.Since(start), err
+}
+```
+
+Scale-to-zero detection:
+
+```go
+// waitForScaleToZero polls the Knative Service's ready replica count every 5 s
+// until zero pods are running or the context deadline is exceeded.
+// It uses the Kubernetes client-go informer rather than kubectl to avoid shell
+// dependencies inside the benchmark binary.
+func waitForScaleToZero(ctx context.Context, svc, namespace string) error {
+    // Poll deployment/<svc>-00001-deployment in the same namespace.
+    // Knative names the underlying deployment <revision>-deployment.
+    // In practice revision name is <svc>-NNNNN; the simplest probe is to check
+    // the pod count directly via the label selector app=<svc>.
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-time.After(5 * time.Second):
+            count, err := readyPodCount(ctx, svc, namespace)
+            if err != nil {
+                return err
+            }
+            if count == 0 {
+                return nil
+            }
+        }
+    }
+}
+```
+
+---
+
+### Step 5 — Expected Terminal Output
+
+This is the canonical terminal output the `measure` command must produce.
+The exact numbers will differ on each machine; the format is fixed.
+
+```
+╔══════════════════════════════════════════════════════════════════════════════════════╗
+║  CloudForge — Knative Scale-to-Zero Cold Start Benchmark                            ║
+║  Cluster : cloudforge-dev (k3d)    Knative Serving v1.15   net-kourier              ║
+║  Samples : 10 per variant          Platform: darwin/arm64  Docker 27.x              ║
+╠══════════════╦══════════╦══════════╦═════════╦═════════╦═════════╦═════════╦════════╣
+║ Variant      ║ Image    ║  p50     ║  p75    ║  p95    ║  p99    ║  min    ║  max   ║
+╠══════════════╬══════════╬══════════╬═════════╬═════════╬═════════╬═════════╬════════╣
+║ minimal      ║    8 MB  ║  1.21s   ║  1.43s  ║  2.08s  ║  2.71s  ║  0.89s  ║  2.71s ║
+║ medium       ║   98 MB  ║  2.84s   ║  3.21s  ║  4.12s  ║  4.67s  ║  2.14s  ║  4.67s ║
+║ heavy        ║  512 MB  ║  5.31s   ║  6.14s  ║  7.44s  ║  8.23s  ║  4.84s  ║  8.23s ║
+╚══════════════╩══════════╩══════════╩═════════╩═════════╩═════════╩═════════╩════════╝
+
+Warm-path latency (min-replicas=1, no cold start):
+  minimal  →   3ms p50
+  medium   →   4ms p50
+  heavy    →   6ms p50
+
+─── Threshold Analysis ──────────────────────────────────────────────────────────────
+  ✓ minimal : p95 2.08s — below 3.0s threshold. Scale-to-zero is safe.
+  ⚠ medium  : p95 4.12s — below 5.0s threshold but > 3.0s. Recommend min-replicas=1
+               for AI functions carrying embedded model weights.
+  ✗ heavy   : p95 7.44s — EXCEEDS 5.0s threshold. min-replicas=1 REQUIRED.
+               Platform documentation must set this as a hard requirement for
+               functions with image size > 200 MB.
+
+─── Recommendation ─────────────────────────────────────────────────────────────────
+  CF-FunctionTrigger default  minScale=0  maxScale=10
+  Override for medium/AI      minScale=1  (add to function manifest)
+  Override for heavy/ML       minScale=1  (enforced by admission webhook)
+```
+
+The tool exits `1` if any variant's p95 breaches its threshold so `make ci-measure`
+can gate a PR.
+
+---
+
+### Step 6 — Makefile Targets
+
+`spikes/knative-coldstart/Makefile`:
+
+```makefile
+CLUSTER     := cloudforge-dev
+KO_REGISTRY := k3d-cloudforge-registry:5001
+NAMESPACE   := default
+SAMPLES     ?= 10
+
+.PHONY: help
+help:
+	@awk 'BEGIN {FS=":.*##"} /^[a-z].*:.*##/ {printf "  %-22s %s\n",$$1,$$2}' $(MAKEFILE_LIST)
+
+# ── Knative installation ──────────────────────────────────────────────────────
+
+.PHONY: deploy-knative
+deploy-knative: ## Install Knative Serving + net-kourier on the k3d cluster
+	kubectl apply -f deploy/knative-serving.yaml
+	kubectl apply -f deploy/knative-net-kourier.yaml
+	kubectl patch configmap/config-network -n knative-serving --type merge \
+		--patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+	kubectl apply -f deploy/config-domain.yaml
+	kubectl wait deployment --all --for=condition=Available --timeout=120s -n knative-serving
+	@echo "✓ Knative Serving is ready."
+
+.PHONY: undeploy-knative
+undeploy-knative: ## Remove Knative Serving from the cluster
+	kubectl delete -f deploy/knative-net-kourier.yaml --ignore-not-found
+	kubectl delete -f deploy/knative-serving.yaml --ignore-not-found
+
+# ── Function variants ─────────────────────────────────────────────────────────
+
+.PHONY: gen-payloads
+gen-payloads: ## Generate synthetic embedded payload files (run once)
+	dd if=/dev/urandom of=functions/medium/payload.bin bs=1M count=50 status=progress
+	dd if=/dev/urandom of=functions/heavy/payload.bin  bs=1M count=200 status=progress
+
+.PHONY: deploy-functions
+deploy-functions: gen-payloads ## Build function images with ko and apply Knative Services
+	KO_DOCKER_REPO=$(KO_REGISTRY) ko apply -f deploy/service-minimal.yaml
+	KO_DOCKER_REPO=$(KO_REGISTRY) ko apply -f deploy/service-medium.yaml
+	KO_DOCKER_REPO=$(KO_REGISTRY) ko apply -f deploy/service-heavy.yaml
+	@echo "✓ Functions deployed."
+
+.PHONY: undeploy-functions
+undeploy-functions: ## Delete all three Knative Services
+	kubectl delete -f deploy/service-minimal.yaml --ignore-not-found
+	kubectl delete -f deploy/service-medium.yaml  --ignore-not-found
+	kubectl delete -f deploy/service-heavy.yaml   --ignore-not-found
+
+# ── Benchmark ─────────────────────────────────────────────────────────────────
+
+.PHONY: measure
+measure: ## Run cold-start benchmark for all variants and print performance table
+	go run ./cmd/measure --service=all --samples=$(SAMPLES) --namespace=$(NAMESPACE)
+
+.PHONY: measure-minimal
+measure-minimal: ## Benchmark the minimal variant only
+	go run ./cmd/measure --service=minimal --samples=$(SAMPLES) --namespace=$(NAMESPACE)
+
+.PHONY: measure-warm
+measure-warm: ## Measure warm-path latency (min-replicas=1, no cold start)
+	go run ./cmd/measure --service=all --samples=$(SAMPLES) --namespace=$(NAMESPACE) --warm
+
+# ── Teardown ──────────────────────────────────────────────────────────────────
+
+.PHONY: teardown
+teardown: undeploy-functions undeploy-knative ## Full cleanup — remove functions and Knative
+```
+
+---
+
+### Step 7 — Root Makefile Integration
+
+Add the following to the root `Makefile` under `##@ Dev Cluster`:
+
+```makefile
+.PHONY: deploy-knative
+deploy-knative: ## Install Knative Serving + net-kourier on the dev cluster
+	$(MAKE) -C spikes/knative-coldstart deploy-knative
+
+.PHONY: measure-coldstart
+measure-coldstart: ## Run scale-to-zero cold-start benchmark (requires deploy-knative + deploy-functions)
+	$(MAKE) -C spikes/knative-coldstart measure
+```
+
+---
+
+### Acceptance Criteria
+
+| # | Criterion | Pass condition |
+|---|---|---|
+| AC1 | Knative Serving installs without errors | All pods in `knative-serving` namespace reach `Running` within 2 min |
+| AC2 | Functions build and deploy via `ko` | `kubectl get ksvc` shows `READY=True` for all three variants |
+| AC3 | Scale-to-zero triggers | After 30 s idle, `kubectl get pods -n default` shows 0 pods for each function |
+| AC4 | Measurement tool produces table | `make measure` prints the full performance table to stdout |
+| AC5 | Minimal variant p95 < 3 s | Recorded in `FINDINGS.md` |
+| AC6 | Go HTTP client invocation confirmed | `cmd/measure` successfully receives `200 OK` for all variants — no curl/kubectl exec |
+| AC7 | FINDINGS.md written | Contains p50/p95/p99 per variant, min-replica recommendation, network backend choice |
+
+---
+
+### File Layout
+
+```
+spikes/knative-coldstart/
+├── cmd/
+│   └── measure/
+│       └── main.go          # benchmark driver — polls scale-to-zero, measures TTFB, prints table
+├── functions/
+│   ├── minimal/
+│   │   └── main.go
+│   ├── medium/
+│   │   ├── main.go
+│   │   └── payload.bin      # generated by make gen-payloads (gitignored)
+│   └── heavy/
+│       ├── main.go
+│       └── payload.bin      # generated by make gen-payloads (gitignored)
+├── deploy/
+│   ├── knative-serving.yaml    # vendored Knative Serving v1.15 core manifests
+│   ├── knative-net-kourier.yaml
+│   ├── config-domain.yaml      # 127.0.0.1.sslip.io magic DNS patch
+│   ├── service-minimal.yaml
+│   ├── service-medium.yaml
+│   └── service-heavy.yaml
+├── Makefile
+├── go.mod
+├── go.sum
+├── README.md
+└── FINDINGS.md
+```
+
+`.gitignore` inside `spikes/knative-coldstart/`:
+```
+functions/medium/payload.bin
+functions/heavy/payload.bin
+```
+
+---
+
+### Go Libraries for This Spike
+
+```
+k8s.io/client-go           — pod count polling (readyReplicas)
+knative.dev/serving/pkg    — Knative Service type (optional — can use unstructured)
+github.com/olekukonko/tablewriter — terminal table rendering
+github.com/spf13/pflag     — CLI flags (--service, --samples, --warm)
+```
+
+
 ## Spike 0.8 — Knative Scale-to-Zero Cold Start
 
 ### Context and Motivation

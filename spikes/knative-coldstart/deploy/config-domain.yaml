@@ -1,0 +1,23 @@
+# Knative serving domain configuration for the local k3d dev cluster.
+#
+# sslip.io is a magic DNS service: any hostname of the form
+#   <anything>.<ip-with-dashes>.sslip.io
+# resolves to <ip-with-dashes> (with dashes replaced by dots).
+#
+# With this ConfigMap, Knative names services like:
+#   http://fn-minimal.default.127.0.0.1.sslip.io:9080
+#
+# The :9080 port matches the k3d port mapping:
+#   port: "9080:80"    nodeFilters: ["loadbalancer"]
+# in deploy/k3d/cluster.yaml — http on port 80 inside the cluster is
+# reachable on port 9080 on the developer's machine.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-domain
+  namespace: knative-serving
+  labels:
+    app.kubernetes.io/part-of: knative-serving
+data:
+  # Setting a key to "" makes it the default domain for all Knative Services.
+  127.0.0.1.sslip.io: ""

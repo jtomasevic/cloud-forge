@@ -1,0 +1,36 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fn-medium
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: cloudforge-spike
+    cloudforge.io/spike: "0.8-coldstart"
+    cloudforge.io/variant: medium
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/initial-scale: "0"
+        autoscaling.knative.dev/scale-to-zero-grace-period: "30s"
+    spec:
+      containers:
+        - image: ko://github.com/jtomasevic/cloud-forge/spikes/knative-coldstart/functions/medium
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 1
+            failureThreshold: 20

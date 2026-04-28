@@ -123,6 +123,19 @@ else
   if [[ $FAILED -eq 0 ]] && ! command -v golangci-lint &>/dev/null; then FAILED=1; fi
 fi
 
+# ── ko (optional) ─────────────────────────────────────────────────────────────
+# ko is used for spike 0.8 (Knative cold-start) with USE_KO=1.
+# The default build path uses plain docker build, so ko is not required.
+# NOTE: `go install github.com/ko-build/ko/cmd/ko@latest` was removed in ko v0.18.
+#       The only supported install is `brew install ko` (macOS) or the script at https://ko.build/install/.
+if command -v ko &>/dev/null; then
+  KO_VER=$(ko version 2>/dev/null | awk '{print $2}' || echo "unknown")
+  ok "ko ${KO_VER} (optional — for spike 0.8 USE_KO=1 mode)"
+else
+  echo -e "  ${YELLOW}?${NC} ko — not found (optional)"
+  echo -e "    ${YELLOW}→ Install: brew install ko${NC}"
+fi
+
 # ── cqlsh (optional) ──────────────────────────────────────────────────────────
 # cqlsh is only needed for local ScyllaDB access (make scylladb-local-shell).
 # It is NOT required for make dev-up — the schema init Job runs cqlsh inside
