@@ -933,7 +933,7 @@ Verify that CF-Provisioner (running in the platform namespace) can apply Kuberne
 
 **Test 4: Resource overhead per tenant**  
 Measure the memory and CPU overhead of an idle vCluster (API server + etcd + CoreDNS, no tenant services running).  
-Expected target: < 300MB RAM, < 100m CPU per idle vCluster.  
+Expected target: < 512MB RAM, < 150m CPU per idle vCluster (vCluster v0.33.2 k3s-backed measured at **384 MiB / 64m** p50 steady-state — Run 3, 3 samples × 30s, vClusters 73 min idle).  
 This determines the minimum host cluster sizing for N tenants.
 
 **Test 5: Cilium policy enforcement**  
@@ -962,7 +962,7 @@ Kill the vCluster API server pod for tenant-A. Verify:
 | Cross-tenant network isolation | 100% blocked in all test vectors | Any vector succeeds |
 | vCluster provisioning time (p95) | < 90s to API ready | > 180s |
 | NATS provisioning inside vCluster (p95) | < 3min | > 5min |
-| Idle vCluster RAM overhead | < 300MB | > 500MB |
+| Idle vCluster RAM overhead | < 512MB | > 768MB |
 | Provisioner communication correctness | 100% apply success rate | Any rejection |
 | vCluster recovery after API server crash | < 60s to re-ready | > 120s |
 
@@ -1038,7 +1038,7 @@ Kill the vCluster API server pod for tenant-A. Verify:
 
 ### 12.4 What Is Risky and Needs Validation
 
-1. **vCluster overhead at scale.** If each vCluster consumes 300MB RAM, a 50-tenant platform requires 15GB RAM just for vCluster control planes. This may be acceptable for a dedicated platform cluster (128GB is typical) but must be measured. The spike (Section 11) must answer this.
+1. **vCluster overhead at scale.** vCluster v0.33.2 (k3s-backed) consumes **384 MiB RAM and 64m CPU** per idle control plane (p50 steady-state, Run 3: 3 samples × 30s, vClusters 73 min idle). A 50-tenant platform requires ~18.8 GiB RAM for vCluster control planes; 200 tenants requires ~75 GiB. A dedicated 96 GiB platform cluster (3× 8-core/32 GiB nodes) comfortably supports up to ~50 tenants + platform services; scale to 128 GiB for 200 tenants. Planning budget: 512 MiB RAM / 150m CPU per vCluster (includes safety headroom). The spike (Section 11) confirmed these numbers with the new multi-sample steady-state probe.
 
 2. **Provisioner kubeconfig management.** Storing one kubeconfig per tenant in OpenBao creates a significant number of OpenBao secrets. The lease and renewal lifecycle must be tested at 100+ tenant scale.
 

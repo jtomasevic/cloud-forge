@@ -1,5 +1,17 @@
 # [IN PROGRESS...........]
 
+# Main documents to read:
+
+[Architecture proposal](docs/1-cloud-forge-architecture-proposal.v0.1.md)
+[Implementation plan](docs/2-cloud-forge-implementation-plan.v0.1.md)
+[UPGRADE - CF VPC](docs/3-Introduce-CF-VPC.md)
+
+# Status
+
+The code is not doing anything useful yet. The project is still in the early spike phase, where we are exploring different infrastructure challenges and evaluating the right open-source technologies to solve them.
+
+At this stage, the only principle we are strictly following is that everything must be based on open-source solutions. The goal is not to build quickly, but to make the right architectural and technology choices before moving into a more concrete implementation.
+
 # CloudForge
 
 CloudForge is an open-source, self-hosted cloud platform that gives SME engineering teams the infrastructure primitives they need to build and run modern applications — including AI-powered workloads — without depending on a hyperscaler.

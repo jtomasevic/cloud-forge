@@ -1,0 +1,13 @@
+# Standard Go build output
+*.exe
+*.test
+coverage.out
+coverage.html
+bin/
+
+# Generated kubeconfigs written during spike runs (contain credentials)
+kubeconfigs/
+*.kubeconfig
+
+# Metrics and benchmark JSON dumps
+results/
