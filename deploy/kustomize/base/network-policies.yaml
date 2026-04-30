@@ -1,0 +1,40 @@
+# Baseline CiliumNetworkPolicies applied to every CloudForge cluster at
+# provisioning time (make dev-up / production bootstrap).
+#
+# Isolation model (validated in spikes/cilium-enforcement — FINDINGS.md):
+#
+#   endpointSelector: {}  — applies to every pod in the namespace.
+#   ingress[0].fromEndpoints — allows ingress only from pods whose
+#     io.kubernetes.pod.namespace label matches the protected namespace.
+#
+#   Once any CNP selects an endpoint Cilium enforces default-deny for all
+#   unmatched flows at the eBPF layer. No explicit deny rule is needed.
+#
+# Which namespaces get a policy here:
+#
+#   cf-system  — The core platform control plane (CF-API, IAM, SecretsConfig).
+#                Tenants must NEVER reach cf-system pods. Policy applied here.
+#                Validated: spike Test 3 (platform_isolation — PASS).
+#
+#   cf-identity, cf-data, cf-events, cf-compute, cf-observability, cf-gateway —
+#                Platform services that need cross-namespace reach from cf-system
+#                (e.g. cf-system → ScyllaDB in cf-data). A "same-namespace only"
+#                ingress policy would break those flows. Policies for these
+#                namespaces will be added once per-service allow-lists are
+#                designed (tracked as a future L7 policy task).
+#
+# Tenant namespaces (cilium-tenant-*, vcluster-*) receive their isolation
+# policies at provisioning time via internal/provisioner.TenantIsolationPolicy,
+# not from this static manifest.
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: platform-isolation
+  namespace: cf-system
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cf-system
