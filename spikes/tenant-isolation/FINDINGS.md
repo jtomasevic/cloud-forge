@@ -162,9 +162,10 @@ For the CF control-plane cluster (vCluster control planes + platform services):
 
 ---
 
-## Test 5: Cilium Enforcement — SKIP (all runs)
+## Test 5: Cilium Enforcement — SKIP (all runs) → validated in dedicated spike
 
-k3d uses flannel by default. Cilium is not installed. Test 5 correctly SKIPs with:
+k3d uses flannel by default during this spike run. Cilium was not installed. Test 5
+correctly SKIPs with:
 
 ```
 Cilium not installed on host cluster (flannel detected); cross-vCluster
@@ -175,6 +176,24 @@ Cilium with deny-by-default and re-run this spike.
 **Topological isolation (Test 1) still holds** without Cilium. Cilium adds defence-in-depth
 as a second enforcement layer (eBPF, deny-by-default) and is **required for production** per
 the CF-VPC architecture proposal.
+
+**Update 2026-04-30 — Cilium spike COMPLETE:** The dedicated Cilium enforcement spike
+(`spikes/cilium-enforcement/`) was run against a k3d cluster configured with
+`--flannel-backend=none` and Cilium v1.17.3 as the sole CNI. All enforcement criteria
+that were SKIPped here were validated:
+
+| Criterion | Cilium spike result |
+|-----------|---------------------|
+| Cross-namespace TCP blocked by CNP | **PASS** — exit 28 (Cilium DROP) confirmed |
+| Same-namespace traffic allowed | **PASS** — curl responded `pong` |
+| Tenant → cf-system (platform) blocked | **PASS** — exit 28 confirmed |
+| Policy decision verifiable | **PASS** — `cilium-dbg policy trace` + Hubble fallback |
+| CNP enforcement holds with vCluster running | **PASS** — host-level CNP honoured |
+
+The dev cluster (`make dev-up`) now installs Cilium by default. Re-running this spike
+on `make dev-up` would record **PASS** for Test 5 instead of SKIP.
+
+See [`spikes/cilium-enforcement/FINDINGS.md`](../cilium-enforcement/FINDINGS.md) for full results.
 
 ---
 
@@ -276,14 +295,18 @@ architecture is sound and validated in Runs 1 & 2.
 | Provisioning speed | ✅ PASS (×2) | HIGH — cold: 8.7s, warm: 2.5s |
 | Provisioner communication | ✅ PASS (×2) | HIGH — scope-enforced kubeconfig model |
 | Resource overhead | ✅ **PASS (Run 3)** | HIGH — 64m / 384 MiB p50 steady-state |
-| Cilium enforcement | ⏭️ SKIP | MEDIUM — topological holds; Cilium needed for production |
+| Cilium enforcement | ✅ **PASS** (dedicated spike) | HIGH — eBPF deny-by-default validated; see `spikes/cilium-enforcement/` |
 | Failure recovery | ✅ PASS (×2) | HIGH — consistent ~13s |
 
 **Required follow-up actions:**
 
-1. **Cilium spike** — Install Cilium on k3d with `--cni=none` and run a dedicated
+1. **Cilium spike** — ~~Install Cilium on k3d with `--cni=none` and run a dedicated
    Cilium enforcement spike to validate eBPF deny-by-default between tenant namespaces.
-   This is the last gap before production-readiness of the isolation layer.
+   This is the last gap before production-readiness of the isolation layer.~~
+   **DONE 2026-04-30** — Cilium v1.17.3 validated in `spikes/cilium-enforcement/`.
+   `make dev-up` now installs Cilium by default. CNP template integrated into
+   `internal/provisioner`. Hubble observability enabled. Isolation layer is
+   **production-ready**.
 
 2. **Update CF-Provisioner design** to use kubeconfig-per-tenant stored in OpenBao.
    The storage and retrieval pattern is validated here.

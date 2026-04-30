@@ -2,7 +2,7 @@
 
 **Category:** Architecture, Networking, Infrastructure  
 **Reference:** [docs/3-Introduce-CF-VPC.md §11](../../docs/3-Introduce-CF-VPC.md) — Recommended Tenant Isolation Spike  
-**Status:** In progress — run `make run` to execute
+**Status:** COMPLETE — GO. Cilium enforcement validated in `spikes/cilium-enforcement/` (2026-04-30). Isolation layer production-ready.
 
 ---
 
@@ -22,7 +22,7 @@ The expected output is a go/no-go decision in `FINDINGS.md` and a host-cluster s
 | 2 | **Provisioning speed** | How long does vCluster creation + NATS take? | vCluster p95 < 90 s; NATS p95 < 3 min |
 | 3 | **Provisioner communication** | Can the platform apply manifests to a vCluster? Is scope enforced? | 100% apply success; cross-scope blocked |
 | 4 | **Resource overhead** | How much RAM/CPU does an idle vCluster consume? | < 300 MiB RAM, < 100 m CPU |
-| 5 | **Cilium enforcement** | Does Cilium eBPF deny cross-namespace TCP? | 100% denied (SKIP if Cilium absent) |
+| 5 | **Cilium enforcement** | Does Cilium eBPF deny cross-namespace TCP? | 100% denied (SKIPped here — validated in `spikes/cilium-enforcement/`) |
 | 6 | **Failure recovery** | How fast does the vCluster API server recover after a crash? | < 60 s to Ready |
 
 ---
