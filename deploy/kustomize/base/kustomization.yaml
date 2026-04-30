@@ -5,3 +5,4 @@ resources:
   - namespaces.yaml
   - rbac.yaml
   - network-policies.yaml
+  - openbao.yaml

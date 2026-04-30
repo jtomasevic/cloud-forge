@@ -30,13 +30,35 @@ tools-check: ## Verify required dev tools are installed; install missing ones vi
 	@bash scripts/tools-check.sh
 
 .PHONY: dev-up
-dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrastructure, and deploy ScyllaDB
+dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrastructure, deploy ScyllaDB and OpenBao
 	k3d cluster create --config deploy/k3d/cluster.yaml
 	k3d kubeconfig merge cloudforge-dev --kubeconfig-merge-default
 	$(MAKE) install-cilium
 	kubectl apply -k deploy/kustomize/base/
 	bash scripts/dev-bootstrap.sh
+	$(MAKE) deploy-cert-manager
 	$(MAKE) deploy-scylladb
+	$(MAKE) deploy-openbao
+	@echo ""
+	@echo "╔══════════════════════════════════════════════════════════════════════╗"
+	@echo "║  CloudForge dev cluster is ready                                     ║"
+	@echo "║                                                                      ║"
+	@echo "║  Services:                                                           ║"
+	@echo "║    Cilium CNI     + Hubble Relay  →  make cilium-status             ║"
+	@echo "║    ScyllaDB       (cf-data)       →  make scylladb-status           ║"
+	@echo "║    OpenBao        (cf-security)   →  make openbao-status            ║"
+	@echo "║                                                                      ║"
+	@echo "║  ⚠  OpenBao is running in DEV MODE:                                 ║"
+	@echo "║       • In-memory storage  (secrets lost on pod restart)            ║"
+	@echo "║       • Root token         (not Kubernetes auth)                    ║"
+	@echo "║       • No TLS             (plaintext HTTP within cluster)          ║"
+	@echo "║     This is intentional for local development. Production uses      ║"
+	@echo "║     auto-unseal, persistent storage, mTLS, and Kubernetes auth.     ║"
+	@echo "║                                                                      ║"
+	@echo "║  Quick access:                                                       ║"
+	@echo "║    make openbao-port-forward   →  http://localhost:8200              ║"
+	@echo "║    token: dev-root-token                                             ║"
+	@echo "╚══════════════════════════════════════════════════════════════════════╝"
 
 .PHONY: install-cilium
 install-cilium: ## Install Cilium CNI + Hubble Relay on the active cluster and wait for readiness
@@ -108,6 +130,57 @@ dev-down: ## Stop and delete local k3d cluster
 
 .PHONY: dev-reset
 dev-reset: dev-down dev-up ## Destroy and recreate local cluster from scratch
+
+# ── OpenBao ───────────────────────────────────────────────────────────────────
+
+##@ OpenBao (Secrets Management)
+
+.PHONY: deploy-openbao
+deploy-openbao: ## Deploy OpenBao in DEV MODE to cf-security namespace (in-memory, root token, no TLS)
+	@echo "── Deploying OpenBao (DEV MODE) ────────────────────────────────────"
+	@echo "   ⚠  DEV MODE: in-memory storage, root token, no TLS, single replica"
+	@echo "   ⚠  All secrets are lost on pod restart"
+	@echo "   ⚠  DO NOT use this configuration in staging or production"
+	kubectl apply -f deploy/kustomize/base/openbao.yaml
+	@echo "── Waiting for OpenBao pod to become ready (up to 60s) ─────────────"
+	kubectl rollout status deployment/openbao -n cf-security --timeout=60s
+	@echo ""
+	@echo "✓ OpenBao ready (DEV MODE)"
+	@echo "  Cluster address : http://openbao.cf-security.svc.cluster.local:8200"
+	@echo "  Root token      : dev-root-token  (from secret openbao-dev-token)"
+	@echo "  Port-forward    : make openbao-port-forward"
+	@echo "  Local address   : http://localhost:8200  (after port-forward)"
+
+.PHONY: openbao-status
+openbao-status: ## Show OpenBao pod status, health, and mounted secret engines
+	@echo "── OpenBao pod ─────────────────────────────────────────────────────"
+	kubectl get pod -n cf-security -l app.kubernetes.io/name=openbao -o wide 2>/dev/null \
+		|| echo "  (no OpenBao pod found — run: make deploy-openbao)"
+	@echo ""
+	@echo "── OpenBao health (requires port-forward on :8200) ─────────────────"
+	@curl -sf http://localhost:8200/v1/sys/health 2>/dev/null \
+		| python3 -m json.tool 2>/dev/null \
+		|| echo "  (OpenBao not reachable — run: make openbao-port-forward in another terminal)"
+	@echo ""
+	@echo "── CiliumNetworkPolicy: secrets-isolation ──────────────────────────"
+	kubectl get cnp secrets-isolation -n cf-security -o yaml 2>/dev/null \
+		| grep -A 20 "spec:" \
+		|| echo "  (CNP not found — is Cilium installed?)"
+
+.PHONY: openbao-port-forward
+openbao-port-forward: ## Forward OpenBao API to localhost:8200 (keep this terminal open)
+	@echo "── Forwarding OpenBao API → localhost:8200 ──────────────────────────"
+	@echo "   ⚠  DEV MODE — root token: dev-root-token"
+	@echo "   Set in your shell:"
+	@echo "     export VAULT_ADDR=http://localhost:8200"
+	@echo "     export VAULT_TOKEN=dev-root-token"
+	@echo "   Or for the bao CLI:"
+	@echo "     export BAO_ADDR=http://localhost:8200"
+	@echo "     export BAO_TOKEN=dev-root-token"
+	@echo "   Press Ctrl-C to stop."
+	@kubectl get pod -n cf-security -l app.kubernetes.io/name=openbao --no-headers 2>/dev/null | grep -q Running \
+		|| (echo "ERROR: OpenBao pod is not running — run: make deploy-openbao" && exit 1)
+	kubectl port-forward -n cf-security svc/openbao 8200:8200
 
 .PHONY: deploy-knative
 deploy-knative: ## Install Knative Serving + net-kourier on the dev cluster
@@ -261,6 +334,50 @@ test-coverage: ## Run unit tests with per-package and per-function coverage repo
 	@echo "── Generating HTML report → coverage.html ──────────────────────────"
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Open coverage.html in a browser to browse line-by-line coverage."
+
+# ── Provisioner ───────────────────────────────────────────────────────────────
+
+##@ Provisioner
+
+.PHONY: provisioner-test
+provisioner-test: ## Run unit tests for internal/provisioner (no Docker required)
+	go test -short -race -count=1 -v ./internal/provisioner/...
+
+.PHONY: provisioner-test-integration
+provisioner-test-integration: ## Run integration tests for internal/provisioner (requires Docker)
+	@echo "── Starting OpenBao testcontainer + running provisioner integration tests ─"
+	@echo "   Requires: Docker running on this host"
+	go test -tags=integration -race -count=1 -timeout=120s -v ./internal/provisioner/...
+
+.PHONY: provisioner-coverage
+provisioner-coverage: ## Unit-test coverage for internal/provisioner (no Docker)
+	@echo "── Unit test coverage: internal/provisioner ─────────────────────────────"
+	go test -short -race -coverprofile=provisioner-coverage.out -covermode=atomic \
+		./internal/provisioner/...
+	@echo ""
+	@echo "── Per-function coverage ───────────────────────────────────────────"
+	@go tool cover -func=provisioner-coverage.out | awk '{ printf "%-70s %s\n", $$1, $$NF }'
+	@echo ""
+	@echo "── Generating HTML report → provisioner-coverage.html ──────────────"
+	go tool cover -html=provisioner-coverage.out -o provisioner-coverage.html
+	@echo "Open provisioner-coverage.html to browse line-by-line coverage."
+
+.PHONY: provisioner-coverage-integration
+provisioner-coverage-integration: ## Full coverage (unit + integration) for internal/provisioner — requires Docker
+	@echo "── Full coverage (unit + integration): internal/provisioner ─────────────"
+	@echo "   Requires: Docker running on this host"
+	go test -tags=integration -race -count=1 -timeout=120s \
+		-coverprofile=provisioner-coverage.out -covermode=atomic \
+		./internal/provisioner/...
+	@echo ""
+	@echo "── Per-function coverage ───────────────────────────────────────────"
+	@go tool cover -func=provisioner-coverage.out | awk '{ printf "%-70s %s\n", $$1, $$NF }'
+	@echo ""
+	@go tool cover -func=provisioner-coverage.out | tail -1
+	@echo ""
+	@echo "── Generating HTML report → provisioner-coverage.html ──────────────"
+	go tool cover -html=provisioner-coverage.out -o provisioner-coverage.html
+	@echo "Open provisioner-coverage.html to browse line-by-line coverage."
 
 # ── Linting and formatting ────────────────────────────────────────────────────
 

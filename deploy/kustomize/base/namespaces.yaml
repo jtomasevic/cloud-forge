@@ -78,3 +78,14 @@ metadata:
     cloudforge.io/component: gateway
   annotations:
     cloudforge.io/description: "API gateway — Apache APISIX, Contour, cert-manager"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cf-security
+  labels:
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/tier: platform
+    cloudforge.io/component: security
+  annotations:
+    cloudforge.io/description: "Secrets management — OpenBao (Vault-compatible). Stores per-tenant vCluster kubeconfigs and platform credentials."
