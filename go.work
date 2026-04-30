@@ -6,4 +6,5 @@ use (
 	./spikes/knative-coldstart
 	./spikes/scylladb-accounts
 	./spikes/tenant-isolation
+	./spikes/cilium-enforcement
 )

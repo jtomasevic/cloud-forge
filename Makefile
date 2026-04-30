@@ -1,6 +1,12 @@
 MODULE  := github.com/jtomasevic/cloud-forge
 REGISTRY := ghcr.io/jtomasevic/cloud-forge
 
+# Cilium CNI — pinned version, must match spikes/cilium-enforcement validation.
+CILIUM_VERSION ?= 1.17.3
+# hubble CLI must match CILIUM_VERSION to avoid "invalid fieldmask" errors.
+# Install: brew install hubble  (then verify: hubble version vs cilium version --client)
+HUBBLE_VERSION ?= 1.17.3
+
 SERVICES := cf cf-install cf-iam cf-secrets cf-resource cf-events cf-functions cf-db cf-gateway cf-observe cf-ai
 API_SERVICES := ai database events functions gateway iam observability resource secrets storage
 
@@ -24,11 +30,77 @@ tools-check: ## Verify required dev tools are installed; install missing ones vi
 	@bash scripts/tools-check.sh
 
 .PHONY: dev-up
-dev-up: tools-check ## Start local k3d cluster, bootstrap infrastructure, and deploy ScyllaDB
+dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrastructure, and deploy ScyllaDB
 	k3d cluster create --config deploy/k3d/cluster.yaml
+	k3d kubeconfig merge cloudforge-dev --kubeconfig-merge-default
+	$(MAKE) install-cilium
 	kubectl apply -k deploy/kustomize/base/
 	bash scripts/dev-bootstrap.sh
 	$(MAKE) deploy-scylladb
+
+.PHONY: install-cilium
+install-cilium: ## Install Cilium CNI + Hubble Relay on the active cluster and wait for readiness
+	@echo "── Installing Cilium $(CILIUM_VERSION) ─────────────────────────────────────────"
+	cilium install --version $(CILIUM_VERSION)
+	@echo "── Waiting for Cilium to be ready (up to 6 minutes) ───────────────"
+	@echo "   Note: k3d boot time for 3 nodes is ~4.5 min (documented in spikes/cilium-enforcement/FINDINGS.md)"
+	cilium status --wait --wait-duration 360s
+	@echo "── Enabling Hubble Relay (flow logs + policy decision observability) "
+	cilium hubble enable --relay
+	@echo "✓ Cilium $(CILIUM_VERSION) ready — Hubble Relay enabled"
+
+.PHONY: cilium-status
+cilium-status: ## Show Cilium CNI health, Hubble Relay status, and active CiliumNetworkPolicies
+	@echo "── Cilium status ───────────────────────────────────────────────────"
+	cilium status
+	@echo ""
+	@echo "── CiliumNetworkPolicies ───────────────────────────────────────────"
+	kubectl get cnp -A 2>/dev/null || echo "(no CiliumNetworkPolicies found — is Cilium installed?)"
+	@echo ""
+	@echo "── Hubble Relay pod ────────────────────────────────────────────────"
+	kubectl get pod -n kube-system -l k8s-app=hubble-relay 2>/dev/null || echo "(Hubble Relay not deployed)"
+
+##@ Hubble Observability
+
+.PHONY: hubble-enable
+hubble-enable: ## Enable Hubble Relay on a running cluster (idempotent; use if Relay was not enabled at install time)
+	@echo "── Enabling Hubble Relay ────────────────────────────────────────────"
+	cilium hubble enable --relay
+	@echo "✓ Hubble Relay enabled — run 'make hubble-port-forward' to start observing"
+
+.PHONY: hubble-port-forward
+hubble-port-forward: ## Start Hubble port-forward (keep this terminal open; use hubble-observe in another)
+	@echo "── Starting Hubble port-forward on localhost:4245 ──────────────────"
+	@echo "   Keep this terminal open. Run 'make hubble-observe' in another terminal."
+	@kubectl get service hubble-relay -n kube-system &>/dev/null \
+	  || (echo "ERROR: Hubble Relay is not deployed. Run 'make hubble-enable' first." && exit 1)
+	cilium hubble port-forward
+
+.PHONY: hubble-observe
+hubble-observe: ## Stream all live network flows (requires hubble-port-forward running; Ctrl-C to stop)
+	@command -v hubble >/dev/null 2>&1 || (echo "ERROR: hubble CLI not found — run: brew install hubble" && exit 1)
+	@echo "── Streaming all network flows (Ctrl-C to stop) ────────────────────"
+	hubble observe --follow
+
+.PHONY: hubble-observe-dropped
+hubble-observe-dropped: ## Stream only DROPPED flows across all namespaces (isolation violations)
+	@command -v hubble >/dev/null 2>&1 || (echo "ERROR: hubble CLI not found — run: brew install hubble" && exit 1)
+	@echo "── Streaming DROPPED flows only (Ctrl-C to stop) ───────────────────"
+	@echo "   (filtering via grep to avoid CLI/Relay version fieldmask mismatch)"
+	hubble observe --follow 2>/dev/null | grep -i "DROPPED" || true
+
+.PHONY: hubble-observe-tenant
+hubble-observe-tenant: ## Show last 200 flows for a tenant namespace: make hubble-observe-tenant NS=cilium-tenant-a
+	@command -v hubble >/dev/null 2>&1 || (echo "ERROR: hubble CLI not found — run: brew install hubble" && exit 1)
+	@test -n "$(NS)" || (echo "ERROR: NS is required. Usage: make hubble-observe-tenant NS=cilium-tenant-a" && exit 1)
+	hubble observe --namespace $(NS) --last 200
+
+.PHONY: hubble-ui
+hubble-ui: ## Enable Hubble UI and open it in the browser (deploys UI pod if not present)
+	@echo "── Enabling Hubble UI ──────────────────────────────────────────────"
+	cilium hubble enable --ui
+	@echo "── Opening Hubble UI in browser ────────────────────────────────────"
+	cilium hubble ui
 
 .PHONY: dev-down
 dev-down: ## Stop and delete local k3d cluster

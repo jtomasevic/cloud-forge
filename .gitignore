@@ -34,3 +34,5 @@ kubeconfig
 
 # specs (local scratch directory)
 /specs
+
+*.tar.gz*

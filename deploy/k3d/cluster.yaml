@@ -30,6 +30,13 @@ options:
       # CloudForge uses Contour for ingress — disable the default Traefik
       - arg: "--disable=traefik"
         nodeFilters: ["server:*"]
+      # Cilium is the CNI — disable k3s's built-in flannel CNI.
+      # Without this flag k3s installs flannel first and Cilium cannot take over.
+      - arg: "--flannel-backend=none"
+        nodeFilters: ["server:*"]
+      # Disable k3s's own network-policy controller; Cilium enforces all policies.
+      - arg: "--disable-network-policy"
+        nodeFilters: ["server:*"]
       # Disable the default local-path-provisioner (we manage storage classes ourselves)
       # Comment out if you want the default storage class for quick experiments
       # - arg: "--disable=local-storage"

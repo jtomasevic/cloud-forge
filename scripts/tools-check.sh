@@ -93,6 +93,29 @@ else
   if [[ $FAILED -eq 0 ]] && ! command -v helm &>/dev/null; then FAILED=1; fi
 fi
 
+# ── cilium CLI ────────────────────────────────────────────────────────────────
+# Required: make dev-up installs Cilium CNI via the cilium CLI.
+if command -v cilium &>/dev/null; then
+  CILIUM_VER=$(cilium version --client 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+  ok "cilium-cli ${CILIUM_VER}"
+else
+  missing "cilium-cli" "not found (needed for make dev-up)"
+  brew_install "cilium-cli" "cilium-cli" || true
+  if [[ $FAILED -eq 0 ]] && ! command -v cilium &>/dev/null; then FAILED=1; fi
+fi
+
+# ── hubble CLI ────────────────────────────────────────────────────────────────
+# Required: make hubble-observe / hubble-observe-dropped / hubble-ui.
+# Separate binary from cilium-cli — must be installed independently.
+if command -v hubble &>/dev/null; then
+  HUBBLE_VER=$(hubble version 2>/dev/null | head -1 | awk '{print $2}' || echo "unknown")
+  ok "hubble ${HUBBLE_VER}"
+else
+  missing "hubble" "not found (needed for make hubble-observe and related targets)"
+  brew_install "hubble" "hubble" || true
+  if [[ $FAILED -eq 0 ]] && ! command -v hubble &>/dev/null; then FAILED=1; fi
+fi
+
 # ── task (go-task) ────────────────────────────────────────────────────────────
 if command -v task &>/dev/null; then
   TASK_VER=$(task --version 2>/dev/null | awk '{print $3}' || echo "unknown")
@@ -158,6 +181,8 @@ if [[ $FAILED -ne 0 ]]; then
     echo "  k3d:           curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash"
     echo "  kubectl:       https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/"
     echo "  helm:          https://helm.sh/docs/intro/install/"
+    echo "  cilium-cli:    curl -L --remote-name-all https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz && sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/local/bin"
+    echo "  hubble:        curl -L --remote-name-all https://github.com/cilium/hubble/releases/latest/download/hubble-linux-amd64.tar.gz && sudo tar xzvfC hubble-linux-amd64.tar.gz /usr/local/bin"
     echo "  task:          https://taskfile.dev/installation/"
     echo "  golangci-lint: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b \$(go env GOPATH)/bin"
   fi
