@@ -1,0 +1,168 @@
+# OpenBao — secrets management for CloudForge dev environment.
+#
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  DEV MODE — NOT FOR PRODUCTION USE                                       ║
+# ║                                                                          ║
+# ║  This manifest runs OpenBao in --dev mode:                               ║
+# ║    • Unsealed immediately on start (no manual unseal step)               ║
+# ║    • In-memory storage (all secrets lost on pod restart)                 ║
+# ║    • Root token is a fixed constant (see Secret below)                   ║
+# ║    • No TLS between OpenBao and its clients                              ║
+# ║    • Single replica (no HA)                                              ║
+# ║                                                                          ║
+# ║  Production differences:                                                 ║
+# ║    • Auto-unseal via cloud KMS (AWS KMS / GCP CKMS)                     ║
+# ║    • Persistent storage (Integrated Raft or PostgreSQL backend)          ║
+# ║    • Kubernetes auth (pod ServiceAccount JWT — no shared root token)     ║
+# ║    • mTLS between provisioner and OpenBao                                ║
+# ║    • 3-node HA cluster with anti-affinity                                ║
+# ║                                                                          ║
+# ║  What you DO get in dev that mirrors production:                         ║
+# ║    • Real OpenBao API at openbao.cf-security.svc.cluster.local:8200      ║
+# ║    • KV v2 engine with the same path structure as production             ║
+# ║    • CiliumNetworkPolicy restricting which pods can reach OpenBao        ║
+# ║    • Namespace isolation (cf-security is separate from cf-system)        ║
+# ║    • Service discovery identical to production                           ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
+# Architecture placement:
+#   docs/3-Introduce-CF-VPC.md §4.1 — OpenBao lives in cf-security namespace.
+#   Provisioner (cf-system) → OpenBao (cf-security) via Kubernetes auth (prod)
+#   or root token (dev).
+#
+# Access in dev:
+#   kubectl port-forward -n cf-security svc/openbao 8200:8200
+#   export VAULT_ADDR=http://localhost:8200
+#   export VAULT_TOKEN=dev-root-token
+#   bao kv put secret/cf/tenants/acme/kubeconfig value=...
+#
+# Or use: make openbao-port-forward
+---
+# Secret holding the dev root token. In production this Secret does not exist;
+# the provisioner authenticates via Kubernetes auth and receives a short-lived
+# scoped token from OpenBao. This root token is intentionally static and
+# well-known — it is ONLY for developer convenience in the local dev cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openbao-dev-token
+  namespace: cf-security
+  labels:
+    app.kubernetes.io/name: openbao
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/dev-only: "true"
+  annotations:
+    cloudforge.io/description: >
+      DEV ONLY — root token for the local OpenBao dev-mode instance.
+      DO NOT use in staging or production. In production, use Kubernetes auth.
+type: Opaque
+stringData:
+  # Root token used to authenticate with the dev OpenBao server.
+  # Matches BAO_DEV_ROOT_TOKEN_ID set in the container environment below.
+  root-token: dev-root-token
+---
+# Deployment runs OpenBao in --dev mode. A single replica is sufficient for
+# local development. Resources are capped to avoid impacting other dev services.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openbao
+  namespace: cf-security
+  labels:
+    app.kubernetes.io/name: openbao
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: secrets
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openbao
+        app.kubernetes.io/part-of: cloudforge
+        cloudforge.io/component: secrets
+    spec:
+      # SecurityContext: run as non-root user (OpenBao default UID 100).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        fsGroup: 1000
+      containers:
+        - name: openbao
+          image: quay.io/openbao/openbao:2.2.0
+          args:
+            - server
+            - -dev
+            - -dev-root-token-id=$(BAO_DEV_ROOT_TOKEN_ID)
+            - -dev-listen-address=0.0.0.0:8200
+          env:
+            - name: BAO_DEV_ROOT_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: openbao-dev-token
+                  key: root-token
+            # Disable mlock in the container — mlock requires elevated
+            # capabilities not available in k3d. In production, mlock is
+            # enabled to prevent secrets from being swapped to disk.
+            - name: BAO_DISABLE_MLOCK
+              value: "true"
+            # Expose OpenBao's own address so internal SDK calls resolve correctly.
+            - name: BAO_ADDR
+              value: "http://127.0.0.1:8200"
+          ports:
+            - name: api
+              containerPort: 8200
+              protocol: TCP
+          # Readiness probe: OpenBao dev mode is healthy as soon as the
+          # /v1/sys/health endpoint returns 200 (initialized + unsealed).
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health
+              port: api
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # OpenBao writes temp files in dev mode
+            capabilities:
+              drop:
+                - ALL
+---
+# Service exposes OpenBao inside the cluster. The DNS name
+# openbao.cf-security.svc.cluster.local:8200 is the address the provisioner
+# uses — identical in dev and production.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao
+  namespace: cf-security
+  labels:
+    app.kubernetes.io/name: openbao
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: secrets
+spec:
+  selector:
+    app.kubernetes.io/name: openbao
+  ports:
+    - name: api
+      port: 8200
+      targetPort: api
+      protocol: TCP
+  type: ClusterIP

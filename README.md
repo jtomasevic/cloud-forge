@@ -158,17 +158,72 @@ export KUBECONFIG=$(pwd)/.dev/kubeconfig
 kubectl get ns
 ```
 
-`make dev-up` creates a 3-node Kubernetes cluster (k3d), applies all platform namespaces, generates a self-signed TLS certificate for `*.cloudforge.local`, and stores an initial admin password — all in one command.
+`make dev-up` creates a single-node Kubernetes cluster (k3d), installs Cilium as CNI, applies all platform namespaces and network policies, deploys cert-manager, ScyllaDB, and OpenBao — all in one command.
 
-See [docs/local-dev.md](docs/local-dev.md) for the full setup guide including troubleshooting, GPU/AI development notes, and day-to-day commands.
+At the end of `make dev-up` you will see a summary box:
+
+```
+╔══════════════════════════════════════════════════════════════════════╗
+║  CloudForge dev cluster is ready                                     ║
+║                                                                      ║
+║  Services:                                                           ║
+║    Cilium CNI     + Hubble Relay  →  make cilium-status             ║
+║    ScyllaDB       (cf-data)       →  make scylladb-status           ║
+║    OpenBao        (cf-security)   →  make openbao-status            ║
+║                                                                      ║
+║  ⚠  OpenBao is running in DEV MODE:                                 ║
+║       • In-memory storage  (secrets lost on pod restart)            ║
+║       • Root token         (not Kubernetes auth)                    ║
+║       • No TLS             (plaintext HTTP within cluster)          ║
+║     This is intentional for local development. Production uses      ║
+║     auto-unseal, persistent storage, mTLS, and Kubernetes auth.     ║
+║                                                                      ║
+║  Quick access:                                                        ║
+║    make openbao-port-forward   →  http://localhost:8200              ║
+║    token: dev-root-token                                             ║
+╚══════════════════════════════════════════════════════════════════════╝
+```
+
+### OpenBao in the dev cluster (DEV MODE)
+
+OpenBao runs in `cf-security` in **dev mode** to give every developer a real secrets-management API that mirrors the production service address, without requiring a production-grade setup.
+
+| Feature | Dev cluster | Production |
+|---------|-------------|------------|
+| Real OpenBao API at the same cluster DNS | ✅ | ✅ |
+| KV v2 path structure (same as prod) | ✅ | ✅ |
+| CiliumNetworkPolicy (cf-system → 8200 only) | ✅ | ✅ |
+| Persistent storage | ❌ In-memory | ✅ Raft |
+| Auth method | ❌ Root token | ✅ Kubernetes auth |
+| TLS | ❌ Plain HTTP | ✅ mTLS |
+| High availability | ❌ Single pod | ✅ 3-node HA |
+
+```bash
+# Forward OpenBao API to your machine (keep this terminal open)
+make openbao-port-forward
+
+# In another terminal:
+export VAULT_ADDR=http://localhost:8200
+export VAULT_TOKEN=dev-root-token
+vault kv put secret/cf/tenants/acme/kubeconfig value=test
+vault kv get secret/cf/tenants/acme/kubeconfig
+
+# Check OpenBao pod status and CNP:
+make openbao-status
+```
+
+See [internal/provisioner/README.md](internal/provisioner/README.md) for the provisioner API and how kubeconfigs are stored and retrieved.
 
 ## Common commands
 
 ```bash
-make dev-up             # Start local cluster
+make dev-up             # Start local cluster (Cilium + ScyllaDB + OpenBao)
 make dev-down           # Stop and delete cluster
 make dev-reset          # Full reset (destroy + recreate)
 make dev-status         # Show cluster and pod status
+
+make openbao-status         # OpenBao pod, health, CNP
+make openbao-port-forward   # Forward OpenBao API → localhost:8200
 
 make build              # Build all service binaries to ./bin/
 make test-unit          # Run unit tests (no Docker required)

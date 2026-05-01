@@ -16,6 +16,10 @@
 #                Tenants must NEVER reach cf-system pods. Policy applied here.
 #                Validated: spike Test 3 (platform_isolation — PASS).
 #
+#   cf-security — OpenBao (secrets management). Tenants must NEVER reach OpenBao.
+#                Only cf-system (the provisioner) may call the OpenBao API.
+#                Policy applied here with an explicit allow from cf-system.
+#
 #   cf-identity, cf-data, cf-events, cf-compute, cf-observability, cf-gateway —
 #                Platform services that need cross-namespace reach from cf-system
 #                (e.g. cf-system → ScyllaDB in cf-data). A "same-namespace only"
@@ -38,3 +42,39 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: cf-system
+---
+# OpenBao (cf-security) isolation policy.
+#
+# Ingress rules:
+#   1. Pods within cf-security may reach OpenBao (e.g. init jobs, health checks).
+#   2. Pods in cf-system (CF-Provisioner, CF-SecretsConfig) may reach OpenBao
+#      on port 8200 (the OpenBao HTTP API). This is the ONLY cross-namespace
+#      connection permitted to OpenBao.
+#
+# Everything else — tenant namespaces, cf-data, cf-events, kube-system — is
+# denied by Cilium's default-deny model the moment this CNP selects any endpoint.
+#
+# Production note: in production, tighten this further by restricting to
+# specific pod labels (e.g. app.kubernetes.io/name=cf-provisioner) rather than
+# the entire cf-system namespace. The namespace-level allow is sufficient for dev.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: secrets-isolation
+  namespace: cf-security
+spec:
+  endpointSelector: {}
+  ingress:
+    # Allow intra-namespace traffic (OpenBao init containers, health probes).
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cf-security
+    # Allow CF-Provisioner and CF-SecretsConfig (in cf-system) to reach
+    # OpenBao API on port 8200.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cf-system
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP

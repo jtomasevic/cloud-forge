@@ -310,6 +310,13 @@ architecture is sound and validated in Runs 1 & 2.
 
 2. **Update CF-Provisioner design** to use kubeconfig-per-tenant stored in OpenBao.
    The storage and retrieval pattern is validated here.
+   **DONE 2026-05-01** — `internal/provisioner` package extended with `kubeconfig.go`:
+   `Store` / `Retrieve` / `Revoke` operations against OpenBao KV v2 at path
+   `secret/cf/tenants/{tenant-id}/kubeconfig`. Cross-tenant path isolation verified
+   by `TestCrossTenant_PolicyIsolation` (scoped OpenBao policy + token). Hard-delete
+   on `Revoke` (all versions). 9 integration tests + 6 unit tests, ≥90% coverage.
+   See `internal/provisioner/README.md` for design decisions and `make provisioner-test-integration`
+   to run the full suite.
 
 3. **Add dedicated worker node pools** for tenant workloads in the production cluster
    design. The sizing table above covers vCluster control planes + platform services only.
