@@ -36,3 +36,5 @@ kubeconfig
 /specs
 
 *.tar.gz*
+
+/cf-provisioner

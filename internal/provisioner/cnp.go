@@ -34,6 +34,37 @@ spec:
 
 var parsedCNPTemplate = template.Must(template.New("cnp").Parse(isolationCNPTemplate))
 
+// provisionerAccessCNPTemplate is the CiliumNetworkPolicy that allows the
+// CF-Provisioner (running in cf-system) to reach the tenant's vCluster API
+// server on port 6443.
+//
+// Without this policy, TenantIsolationPolicy's default-deny blocks the
+// provisioner from managing the tenant's vCluster after isolation is applied.
+//
+// Selector: pods labelled app=vcluster in the tenant namespace (set by the
+// vCluster Helm chart). The provisioner is matched by its source namespace
+// label (io.kubernetes.pod.namespace: cf-system).
+const provisionerAccessCNPTemplate = `apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: provisioner-access
+  namespace: {{ .Namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app: vcluster
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cf-system
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+`
+
+var parsedAccessTemplate = template.Must(template.New("cnp-access").Parse(provisionerAccessCNPTemplate))
+
 // cnpData holds the values injected into the CNP template.
 type cnpData struct {
 	PolicyName string
@@ -62,6 +93,30 @@ func TenantIsolationPolicy(namespace string) ([]byte, error) {
 // CloudForge control plane.
 func PlatformIsolationPolicy(namespace string) ([]byte, error) {
 	return renderCNP(namespace, "platform-isolation")
+}
+
+// ProvisionerAccessPolicy renders a CiliumNetworkPolicy YAML that allows the
+// CF-Provisioner (running in cf-system) to reach the tenant's vCluster API
+// server on port 6443.
+//
+// This policy must be applied alongside TenantIsolationPolicy at provisioning
+// time. Without it, the default-deny isolation blocks the provisioner from
+// managing the vCluster after the namespace is locked down.
+//
+// The returned bytes are ready to be passed to kubectl apply or the Kubernetes
+// client's Apply method.
+func ProvisionerAccessPolicy(namespace string) ([]byte, error) {
+	if err := validateNamespace(namespace); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := parsedAccessTemplate.Execute(&buf, cnpData{
+		PolicyName: "provisioner-access",
+		Namespace:  namespace,
+	}); err != nil {
+		return nil, fmt.Errorf("render provisioner-access CNP template: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // renderCNP renders the isolation template for the given namespace and policy name.

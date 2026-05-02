@@ -52,3 +52,14 @@ spec:
           limits:
             cpu: "1000m"
             memory: "2Gi"
+
+        # agentResources covers the scylla-manager-agent sidecar injected by the
+        # Scylla Operator.  cf-data-quota requires every container to declare
+        # explicit limits, so this field is mandatory in the dev cluster.
+        agentResources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
