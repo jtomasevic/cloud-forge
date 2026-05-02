@@ -18,10 +18,10 @@ func TestIsConnectionBlocked(t *testing.T) {
 		{"nc: network unreachable", true},
 		{"connection timed out", true},
 		{"host is unreachable", true},
-		{"nc (10.100.2.5:8080) open", false},      // successful connection
+		{"nc (10.100.2.5:8080) open", false}, // successful connection
 		{"10.100.2.5 (10.100.2.5:8080) succeeded", false},
-		{"", true},                                 // empty = blocked
-		{"some unknown error", true},               // ambiguous = blocked
+		{"", true},                   // empty = blocked
+		{"some unknown error", true}, // ambiguous = blocked
 	}
 	for _, c := range cases {
 		got := isConnectionBlocked(c.output)
@@ -65,21 +65,21 @@ func TestBuildIsolationEvidence(t *testing.T) {
 		wantSubstrs []string
 	}{
 		{
-			ir:       IsolationResult{DirectIPBlocked: true, DNSBlocked: true},
-			ip:       "10.100.2.5",
-			wantPass: true,
+			ir:          IsolationResult{DirectIPBlocked: true, DNSBlocked: true},
+			ip:          "10.100.2.5",
+			wantPass:    true,
 			wantSubstrs: []string{"10.100.2.5", "BLOCKED ✓", "DNS=BLOCKED"},
 		},
 		{
-			ir:       IsolationResult{DirectIPBlocked: false, DNSBlocked: true},
-			ip:       "10.100.2.5",
-			wantPass: false,
+			ir:          IsolationResult{DirectIPBlocked: false, DNSBlocked: true},
+			ip:          "10.100.2.5",
+			wantPass:    false,
 			wantSubstrs: []string{"REACHABLE ✗"},
 		},
 		{
-			ir:       IsolationResult{DirectIPBlocked: true, DNSBlocked: false},
-			ip:       "10.100.2.5",
-			wantPass: false,
+			ir:          IsolationResult{DirectIPBlocked: true, DNSBlocked: false},
+			ip:          "10.100.2.5",
+			wantPass:    false,
 			wantSubstrs: []string{"DNS=RESOLVED ✗"},
 		},
 	}
@@ -101,7 +101,7 @@ func TestRunTestNetworkIsolation_Pass(t *testing.T) {
 		PodIPResult:         "10.100.2.5",
 		RunInPodResponses: []RunInPodResponse{
 			// netprobe ready handled by WaitPodReady, this is called for nc + nslookup
-			{Output: "nc: connection refused"}, // direct IP blocked
+			{Output: "nc: connection refused"},                                        // direct IP blocked
 			{Output: "nslookup: can't find echo.default.svc.cluster.local: NXDOMAIN"}, // DNS blocked
 		},
 	}

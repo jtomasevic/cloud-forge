@@ -15,12 +15,12 @@ func TestIsTenantBScopedOut(t *testing.T) {
 		err    error
 		want   bool
 	}{
-		{"", errors.New("no such pod"), true},           // RunInPod itself fails → isolated
+		{"", errors.New("no such pod"), true},            // RunInPod itself fails → isolated
 		{"Error from server (NotFound): ...", nil, true}, // kubectl says not found
 		{"forbidden", nil, true},
 		{"unauthorized", nil, true},
 		{"configmap \"cf-provisioner-test\" deleted", nil, false}, // delete succeeded → broken
-		{"", nil, true}, // empty, ambiguous → treat as isolated
+		{"", nil, true},                                           // empty, ambiguous → treat as isolated
 	}
 	for _, c := range cases {
 		got := isTenantBScopedOut(c.output, c.err)

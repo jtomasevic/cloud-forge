@@ -137,7 +137,7 @@ var vclusterRunner = defaultVClusterRunner
 
 // defaultVClusterRunner executes the real vcluster CLI binary.
 func defaultVClusterRunner(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "vcluster", args...)
+	cmd := exec.CommandContext(ctx, "vcluster", args...) //nolint:gosec // args are validated by CreateVCluster before reaching this runner
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -194,7 +194,7 @@ var kubeconfigExporter = defaultKubeconfigExporter
 // inClusterServer overrides the server address to the Kubernetes-internal DNS
 // name so the stored kubeconfig works from inside the host cluster.
 func defaultKubeconfigExporter(ctx context.Context, tenantID, hostNamespace, inClusterServer string) (string, error) {
-	cmd := exec.CommandContext(ctx, "vcluster", "connect", tenantID,
+	cmd := exec.CommandContext(ctx, "vcluster", "connect", tenantID, //nolint:gosec // tenantID is validated by validateTenantID before this call
 		"--namespace", hostNamespace,
 		"--server", inClusterServer,
 		"--print",
@@ -227,7 +227,7 @@ func exportVClusterKubeconfig(ctx context.Context, tenantID, hostNamespace, inCl
 var kubectlRunner = defaultKubectlRunner
 
 func defaultKubectlRunner(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd := exec.CommandContext(ctx, "kubectl", args...) //nolint:gosec // args are caller-controlled internal kubectl sub-commands
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

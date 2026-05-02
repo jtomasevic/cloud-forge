@@ -38,12 +38,12 @@ func main() {
 
 func run() int {
 	// ── Flags ─────────────────────────────────────────────────────────────
-	tenantA     := flag.String("tenant-a", "cilium-tenant-a", "name for the first tenant namespace")
-	tenantB     := flag.String("tenant-b", "cilium-tenant-b", "name for the second tenant namespace")
-	platformNs  := flag.String("platform", "cf-system", "platform (control-plane) namespace name")
-	vclusterNs  := flag.String("vcluster-ns", "vcluster-pilot", "host namespace for the vCluster in Test 5")
+	tenantA := flag.String("tenant-a", "cilium-tenant-a", "name for the first tenant namespace")
+	tenantB := flag.String("tenant-b", "cilium-tenant-b", "name for the second tenant namespace")
+	platformNs := flag.String("platform", "cf-system", "platform (control-plane) namespace name")
+	vclusterNs := flag.String("vcluster-ns", "vcluster-pilot", "host namespace for the vCluster in Test 5")
 	vclusterName := flag.String("vcluster", "pilot", "vCluster name for Test 5")
-	verbose     := flag.Bool("verbose", false, "print per-test metrics after results table")
+	verbose := flag.Bool("verbose", false, "print per-test metrics after results table")
 	flag.Parse()
 
 	// ── Logger ────────────────────────────────────────────────────────────

@@ -99,8 +99,8 @@ func TestRunTestFailureRecovery_FailSlowRecovery(t *testing.T) {
 
 func TestRunTestFailureRecovery_FailWaitError(t *testing.T) {
 	fc := &FakeClient{
-		PodsByLabel:      []string{"vcluster-0"},
-		WaitPodReadyErr:  errors.New("context deadline exceeded"),
+		PodsByLabel:     []string{"vcluster-0"},
+		WaitPodReadyErr: errors.New("context deadline exceeded"),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

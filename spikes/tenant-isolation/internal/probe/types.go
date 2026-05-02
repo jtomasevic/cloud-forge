@@ -15,12 +15,12 @@ import (
 type TestName string
 
 const (
-	TestNetworkIsolation   TestName = "network_isolation"
-	TestProvisioningSpeed  TestName = "provisioning_speed"
-	TestProvisionerComm    TestName = "provisioner_communication"
-	TestResourceOverhead   TestName = "resource_overhead"
-	TestCiliumEnforcement  TestName = "cilium_enforcement"
-	TestFailureRecovery    TestName = "failure_recovery"
+	TestNetworkIsolation  TestName = "network_isolation"
+	TestProvisioningSpeed TestName = "provisioning_speed"
+	TestProvisionerComm   TestName = "provisioner_communication"
+	TestResourceOverhead  TestName = "resource_overhead"
+	TestCiliumEnforcement TestName = "cilium_enforcement"
+	TestFailureRecovery   TestName = "failure_recovery"
 )
 
 // AllTests returns the canonical ordered list of test names.

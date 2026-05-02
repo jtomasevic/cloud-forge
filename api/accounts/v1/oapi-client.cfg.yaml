@@ -1,0 +1,17 @@
+# api/accounts/v1/oapi-client.cfg.yaml
+#
+# oapi-codegen configuration for the CloudForge Accounts API client SDK.
+# Other services (e.g. CLI, integration tests) use this typed HTTP client.
+#
+# Regenerate with:
+#   make gen-api SERVICE=accounts
+package: accountsclient
+
+generate:
+  client: true
+  models: true
+
+output: ../../../pkg/client/accounts/client.gen.go
+
+output-options:
+  response-type-suffix: "HTTPResponse"

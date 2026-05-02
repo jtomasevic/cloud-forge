@@ -79,12 +79,12 @@ type SpeedSample struct {
 
 // SpeedStats summarises a set of SpeedSamples.
 type SpeedStats struct {
-	Samples          int
-	FailedSamples    int
-	P50VCluster      time.Duration
-	P95VCluster      time.Duration
-	P50NATS          time.Duration
-	P95NATS          time.Duration
+	Samples       int
+	FailedSamples int
+	P50VCluster   time.Duration
+	P95VCluster   time.Duration
+	P50NATS       time.Duration
+	P95NATS       time.Duration
 }
 
 // RunTestProvisioningSpeed simulates N provisioning cycles using a ready-made

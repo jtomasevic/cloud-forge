@@ -83,7 +83,7 @@ func TestRunTestCiliumEnforcement_Skip_NoCilium(t *testing.T) {
 
 func TestRunTestCiliumEnforcement_Pass_ConnectionBlocked(t *testing.T) {
 	fc := &FakeClient{
-		PodsByLabel:         []string{"cilium-pod"},   // Cilium detected
+		PodsByLabel:         []string{"cilium-pod"}, // Cilium detected
 		WaitPodReadyPodName: "cilium-probe",
 		PodIPResult:         "10.96.5.100",
 		RunInPodResponses: []RunInPodResponse{

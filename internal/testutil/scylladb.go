@@ -101,6 +101,68 @@ func StartScyllaDB(t *testing.T) (*gocql.Session, func()) {
 	return sess, cleanup
 }
 
+// StartScyllaDBForSuite starts a shared ScyllaDB container for use in TestMain.
+// Unlike StartScyllaDB, it does not require a *testing.T; instead it returns
+// an error that the caller must handle (typically with log.Fatal). The returned
+// cleanup function terminates the container and must be called when the suite
+// finishes (e.g. deferred in TestMain after m.Run()).
+func StartScyllaDBForSuite(ctx context.Context) (*gocql.Session, func(), error) {
+	req := testcontainers.ContainerRequest{
+		Image:        scyllaImage,
+		ExposedPorts: []string{"9042/tcp"},
+		Cmd:          []string{"--developer-mode=1", "--smp=1"},
+		WaitingFor: wait.ForLog("init - Scylla version").
+			WithOccurrence(1).
+			WithStartupTimeout(90 * time.Second),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("testutil: start ScyllaDB container: %w", err)
+	}
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: get ScyllaDB host: %w", err)
+	}
+
+	port, err := container.MappedPort(ctx, "9042")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: get ScyllaDB port: %w", err)
+	}
+
+	var sess *gocql.Session
+	for attempt := 1; attempt <= 20; attempt++ {
+		cluster := gocql.NewCluster(host)
+		cluster.Port, _ = portToInt(port.Port())
+		cluster.ConnectTimeout = 5 * time.Second
+		cluster.Timeout = 5 * time.Second
+		cluster.ProtoVersion = 4
+		cluster.Consistency = gocql.Quorum
+
+		sess, err = cluster.CreateSession()
+		if err == nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: connect to ScyllaDB after 20 attempts: %w", err)
+	}
+
+	cleanup := func() {
+		sess.Close()
+		_ = container.Terminate(ctx)
+	}
+	return sess, cleanup, nil
+}
+
 // portToInt converts a port string (e.g. "9042") to an int.
 func portToInt(port string) (int, error) {
 	var n int

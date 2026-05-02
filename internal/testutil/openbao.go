@@ -4,6 +4,7 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	openbao "github.com/openbao/openbao/api/v2"
@@ -116,4 +117,65 @@ func StartOpenBao(t *testing.T) (*openbao.Client, func()) {
 	t.Cleanup(cleanup)
 
 	return client, cleanup
+}
+
+// StartOpenBaoForSuite starts a shared OpenBao container for use in TestMain.
+// Unlike StartOpenBao, it does not require a *testing.T; instead it returns
+// an error that the caller must handle (typically with log.Fatal). The returned
+// cleanup function terminates the container and must be called when the suite
+// finishes (e.g. deferred in TestMain after m.Run()).
+func StartOpenBaoForSuite(ctx context.Context) (*openbao.Client, func(), error) {
+	req := testcontainers.ContainerRequest{
+		Image:        openBaoImage,
+		ExposedPorts: []string{"8200/tcp"},
+		Env: map[string]string{
+			"BAO_DEV_ROOT_TOKEN_ID": openBaoRootToken,
+		},
+		Cmd: []string{"server", "-dev",
+			"-dev-root-token-id=" + openBaoRootToken,
+			"-dev-listen-address=0.0.0.0:8200",
+		},
+		WaitingFor: wait.ForLog("Development mode should NOT be used in production installations!"),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("testutil: start OpenBao container: %w", err)
+	}
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: get OpenBao host: %w", err)
+	}
+
+	port, err := container.MappedPort(ctx, "8200")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: get OpenBao port: %w", err)
+	}
+
+	addr := "http://" + host + ":" + port.Port()
+	cfg := openbao.DefaultConfig()
+	cfg.Address = addr
+
+	client, err := openbao.NewClient(cfg)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: create OpenBao client: %w", err)
+	}
+	client.SetToken(openBaoRootToken)
+
+	if _, err := client.Sys().Health(); err != nil {
+		_ = container.Terminate(ctx)
+		return nil, nil, fmt.Errorf("testutil: ping OpenBao: %w", err)
+	}
+
+	cleanup := func() {
+		_ = container.Terminate(ctx)
+	}
+	return client, cleanup, nil
 }

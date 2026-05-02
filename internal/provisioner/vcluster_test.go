@@ -12,9 +12,9 @@ import (
 // well-known substrings in the error message.
 func TestIsVClusterNotFound(t *testing.T) {
 	tests := []struct {
-		name    string
-		errMsg  string
-		want    bool
+		name   string
+		errMsg string
+		want   bool
 	}{
 		{"nil error", "", false},
 		{"not found", "VirtualCluster not found", true},

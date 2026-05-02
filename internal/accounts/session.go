@@ -12,24 +12,12 @@ import (
 // CF-Accounts. In dev mode the cluster runs as a single node in the cf-data
 // namespace; production uses a 3-node cluster with RF=3 and QUORUM consistency.
 type Config struct {
-	// Hosts is the list of ScyllaDB contact points (hostnames or IPs).
-	// In dev: {"127.0.0.1"} (after make scylladb-port-forward).
-	// In-cluster: {"cloudforge-scylla-client.cf-data.svc.cluster.local"}.
-	Hosts []string
-
-	// Port is the CQL native transport port. Default: 9042.
-	Port int
-
-	// Username and Password for ScyllaDB authentication.
-	// Leave empty if the cluster is configured with no authenticator.
-	Username string
-	Password string
-
-	// ConnectTimeout is the dial timeout for initial cluster contact.
+	Username       string
+	Password       string
+	Hosts          []string
+	Port           int
 	ConnectTimeout time.Duration
-
-	// QueryTimeout is the per-query execution timeout.
-	QueryTimeout time.Duration
+	QueryTimeout   time.Duration
 }
 
 // DefaultConfig returns a Config suitable for the local dev cluster
@@ -48,7 +36,7 @@ func DefaultConfig() Config {
 // routing hot path; individual queries may override this.
 //
 // The caller is responsible for calling session.Close() when done.
-func NewSession(cfg Config) (*gocql.Session, error) {
+func NewSession(cfg *Config) (*gocql.Session, error) {
 	cluster := gocql.NewCluster(cfg.Hosts...)
 	cluster.Port = cfg.Port
 	cluster.ConnectTimeout = cfg.ConnectTimeout

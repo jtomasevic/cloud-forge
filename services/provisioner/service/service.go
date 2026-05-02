@@ -21,25 +21,48 @@ import (
 // CFProvisionerService is the concrete implementation of ProvisionerService.
 // It is unexported and only accessible through the ProvisionerService interface
 // returned by New().
+// Fields are stored as local interfaces (tenantManager, jobQueuer, apiKeyManager)
+// so that tests can inject mocks without needing a live ScyllaDB / OpenBao.
 type CFProvisionerService struct {
-	tenants *accounts.TenantStore
-	keys    *accounts.APIKeyStore
-	jobs    *accounts.JobStore
+	tenants tenantManager
+	jobs    jobQueuer
+	keys    apiKeyManager
 	bao     *openbao.Client
 	log     *slog.Logger
 }
+
+// Workflow step seams — replaced in tests to avoid kubectl, OpenBao, and
+// vCluster CLI dependencies.  Production code uses the real functions.
+//
+//nolint:gochecknoglobals // test seams; deliberate package-level mutability
+var (
+	createNamespaceFn        = createNamespace
+	applyIsolationPoliciesFn = applyIsolationPolicies
+	createVClusterFn         = provisioner.CreateVCluster
+	storeKubeconfigFn        = provisioner.Store
+	generateAPIKeyFn         = provisioner.GenerateAPIKey
+	revokeKubeconfigFn       = provisioner.Revoke
+	deleteVClusterFn         = provisioner.DeleteVCluster
+	kubectlApplyBytesFn      = kubectlApplyBytes
+
+	// Policy rendering seams — replaced in tests to exercise all error branches
+	// of applyIsolationPolicies without needing a namespace that fails in one
+	// template but not the other.
+	tenantIsolationPolicyFn   = provisioner.TenantIsolationPolicy
+	provisionerAccessPolicyFn = provisioner.ProvisionerAccessPolicy
+)
 
 // ── ProvisionerService implementation ────────────────────────────────────────
 
 // Provision enqueues the VPC provisioning job and launches the background
 // workflow. Returns the job ID immediately; callers must poll GetJob.
 func (s *CFProvisionerService) Provision(ctx context.Context, p ProvisionParams) (uuid.UUID, error) {
-	idemKey := "provision-vpc:" + p.TenantID
+	idemKey := "provision-vpc:" + p.TenantSlug
 	jobID, err := s.jobs.Enqueue(ctx, uuid.Nil, idemKey, accounts.JobOperationProvisionVPC)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("enqueue provision job: %w", err)
 	}
-	go s.runProvisionWorkflow(jobID, p)
+	go s.runProvisionWorkflow(jobID, p) //nolint:gosec,contextcheck // goroutine owns its own lifecycle context, not the request context
 	return jobID, nil
 }
 
@@ -73,7 +96,7 @@ func (s *CFProvisionerService) Deprovision(ctx context.Context, p DeprovisionPar
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("enqueue deprovision job: %w", err)
 	}
-	go s.runDeprovisionWorkflow(jobID, tenant)
+	go s.runDeprovisionWorkflow(jobID, tenant) //nolint:gosec,contextcheck // goroutine owns its own lifecycle context, not the request context
 	return jobID, nil
 }
 
@@ -88,7 +111,7 @@ func (s *CFProvisionerService) runProvisionWorkflow(jobID uuid.UUID, p Provision
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	log := s.logger().With("job_id", jobID, "tenant", p.TenantID)
+	log := s.logger().With("job_id", jobID, "tenant", p.TenantSlug)
 
 	// Step 1: claim the job with an LWT so only one replica runs the workflow.
 	claimed, err := s.jobs.Claim(ctx, uuid.Nil, jobID)
@@ -101,14 +124,14 @@ func (s *CFProvisionerService) runProvisionWorkflow(jobID uuid.UUID, p Provision
 		return
 	}
 
-	// Step 2: create tenant record (status: PROVISIONING).
-	tenant, err := s.tenants.Create(ctx, p.TenantID, p.DisplayName, string(p.Plan))
-	if errors.Is(err, accounts.ErrTenantAlreadyExists) {
-		_ = s.jobs.Fail(ctx, uuid.Nil, jobID, "tenant already exists: "+p.TenantID)
+	// Step 2: look up the existing tenant record (created during registration).
+	tenant, err := s.tenants.GetBySlug(ctx, p.TenantSlug)
+	if errors.Is(err, accounts.ErrTenantNotFound) {
+		_ = s.jobs.Fail(ctx, uuid.Nil, jobID, "tenant not found: "+p.TenantSlug)
 		return
 	}
 	if err != nil {
-		s.failJob(ctx, log, uuid.Nil, jobID, "create tenant record", err)
+		s.failJob(ctx, log, uuid.Nil, jobID, "get tenant record", err)
 		return
 	}
 
@@ -120,21 +143,21 @@ func (s *CFProvisionerService) runProvisionWorkflow(jobID uuid.UUID, p Provision
 	cidrPair := provisioner.CIDRPair{PodCIDR: "10.100.1.0/24", SvcCIDR: "10.200.1.0/24"}
 
 	// Step 4: create host namespace.
-	hostNamespace := "tenant-" + p.TenantID
-	if err := createNamespace(ctx, hostNamespace); err != nil {
+	hostNamespace := "tenant-" + p.TenantSlug
+	if err := createNamespaceFn(ctx, hostNamespace); err != nil { //nolint:govet // idiomatic if-err pattern; scoped err does not escape the block
 		s.failJob(ctx, log, tenant.TenantID, jobID, "create namespace", err)
 		return
 	}
 
 	// Step 5: apply Cilium isolation policies.
-	if err := applyIsolationPolicies(ctx, hostNamespace); err != nil {
+	if err := applyIsolationPoliciesFn(ctx, hostNamespace); err != nil { //nolint:govet // idiomatic if-err pattern; scoped err does not escape the block
 		s.failJob(ctx, log, tenant.TenantID, jobID, "apply Cilium policies", err)
 		return
 	}
 
 	// Step 6: create vCluster.
-	vclusterResult, err := provisioner.CreateVCluster(ctx, provisioner.VClusterConfig{
-		TenantID:      p.TenantID,
+	vclusterResult, err := createVClusterFn(ctx, provisioner.VClusterConfig{
+		TenantID:      p.TenantSlug,
 		HostNamespace: hostNamespace,
 		PodCIDR:       cidrPair.PodCIDR,
 		SvcCIDR:       cidrPair.SvcCIDR,
@@ -145,15 +168,15 @@ func (s *CFProvisionerService) runProvisionWorkflow(jobID uuid.UUID, p Provision
 	}
 
 	// Step 7: store kubeconfig in OpenBao.
-	if err := provisioner.Store(ctx, s.bao, p.TenantID, vclusterResult.KubeconfigYAML); err != nil {
+	if err := storeKubeconfigFn(ctx, s.bao, p.TenantSlug, vclusterResult.KubeconfigYAML); err != nil { //nolint:govet // idiomatic if-err pattern; scoped err does not escape the block
 		s.failJob(ctx, log, tenant.TenantID, jobID, "store kubeconfig", err)
 		return
 	}
 
 	// Step 8: generate API key (raw key returned once; only the hash is persisted).
-	generated, err := provisioner.GenerateAPIKey(
+	generated, err := generateAPIKeyFn(
 		ctx, s.keys, tenant.TenantID,
-		fmt.Sprintf("%s default key", p.DisplayName),
+		fmt.Sprintf("%s default key", tenant.DisplayName),
 		"provision:write,provision:read",
 	)
 	if err != nil {
@@ -207,13 +230,13 @@ func (s *CFProvisionerService) runDeprovisionWorkflow(jobID uuid.UUID, tenant *a
 	hostNamespace := "tenant-" + tenant.Slug
 
 	// Step 1: revoke kubeconfig from OpenBao (idempotent).
-	if err := provisioner.Revoke(ctx, s.bao, tenant.Slug); err != nil {
+	if err := revokeKubeconfigFn(ctx, s.bao, tenant.Slug); err != nil {
 		s.failJob(ctx, log, tenant.TenantID, jobID, "revoke kubeconfig", err)
 		return
 	}
 
 	// Step 2: delete vCluster and its host namespace (idempotent).
-	if err := provisioner.DeleteVCluster(ctx, tenant.Slug, hostNamespace); err != nil {
+	if err := deleteVClusterFn(ctx, tenant.Slug, hostNamespace); err != nil {
 		s.failJob(ctx, log, tenant.TenantID, jobID, "delete vCluster", err)
 		return
 	}
@@ -252,32 +275,32 @@ func (s *CFProvisionerService) logger() *slog.Logger {
 // createNamespace creates a Kubernetes namespace idempotently using
 // kubectl apply with a dry-run-generated manifest.
 func createNamespace(ctx context.Context, namespace string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "yaml")
+	cmd := exec.CommandContext(ctx, "kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "yaml") //nolint:gosec // namespace is validated by the caller; args are literal strings
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("kubectl dry-run namespace: %w", err)
 	}
-	return kubectlApplyBytes(ctx, stdout.Bytes())
+	return kubectlApplyBytesFn(ctx, stdout.Bytes())
 }
 
 // applyIsolationPolicies renders and applies the two Cilium policies for a
 // tenant namespace: TenantIsolationPolicy (default-deny) and
 // ProvisionerAccessPolicy (cf-system → vCluster port 6443 only).
 func applyIsolationPolicies(ctx context.Context, namespace string) error {
-	isolation, err := provisioner.TenantIsolationPolicy(namespace)
+	isolation, err := tenantIsolationPolicyFn(namespace)
 	if err != nil {
 		return err
 	}
-	if err := kubectlApplyBytes(ctx, isolation); err != nil {
+	if err := kubectlApplyBytesFn(ctx, isolation); err != nil { //nolint:govet // idiomatic if-err pattern; scoped err does not escape the block
 		return fmt.Errorf("apply tenant-isolation: %w", err)
 	}
 
-	access, err := provisioner.ProvisionerAccessPolicy(namespace)
+	access, err := provisionerAccessPolicyFn(namespace)
 	if err != nil {
 		return err
 	}
-	if err := kubectlApplyBytes(ctx, access); err != nil {
+	if err := kubectlApplyBytesFn(ctx, access); err != nil {
 		return fmt.Errorf("apply provisioner-access: %w", err)
 	}
 	return nil

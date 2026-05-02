@@ -17,9 +17,9 @@ func TestPercentileDuration(t *testing.T) {
 	}{
 		{[]time.Duration{1, 2, 3, 4, 5}, 50, 3},
 		{[]time.Duration{1, 2, 3, 4, 5}, 95, 5},
-		{[]time.Duration{10, 20}, 50, 20},		{[]time.Duration{100}, 50, 100},
+		{[]time.Duration{10, 20}, 50, 20}, {[]time.Duration{100}, 50, 100},
 		{nil, 50, 0},
-		{[]time.Duration{5, 1, 3, 2, 4}, 0, 1},  // unsorted input
+		{[]time.Duration{5, 1, 3, 2, 4}, 0, 1}, // unsorted input
 	}
 	for _, c := range cases {
 		got := percentileDuration(c.ds, c.p)
@@ -103,8 +103,8 @@ func TestRunTestProvisioningSpeed_Pass(t *testing.T) {
 	cfg.NATSReadySeconds = 180
 
 	fc := &FakeClient{
-		WaitPodReadyPodName:    "nats-0",
-		WaitPodReadyElapsed:    45 * time.Second,
+		WaitPodReadyPodName: "nats-0",
+		WaitPodReadyElapsed: 45 * time.Second,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

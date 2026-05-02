@@ -33,6 +33,7 @@ import (
 	"github.com/cloud-forge/spikes/scylladb-accounts/internal/bench"
 	"github.com/gocql/gocql"
 )
+
 func main() {
 	// ── Flags ─────────────────────────────────────────────────────────────────
 	host := flag.String("host", "127.0.0.1", "ScyllaDB CQL host")

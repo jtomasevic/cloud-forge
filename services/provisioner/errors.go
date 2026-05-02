@@ -23,7 +23,7 @@ type ErrorBody = generated.ErrorResponse
 //   - ErrJobNotFound         → 404 Not Found
 //   - ErrCIDRExhausted       → 503 Service Unavailable
 //   - anything else          → 500 Internal Server Error
-func HTTPStatusAndBody(err error) (int, ErrorBody) {
+func HTTPStatusAndBody(err error) (status int, body ErrorBody) {
 	switch {
 	case errors.Is(err, svc.ErrTenantAlreadyExists):
 		return http.StatusConflict, newBody(generated.CONFLICT, err.Error())

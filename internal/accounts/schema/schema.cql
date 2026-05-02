@@ -40,6 +40,48 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS cf.tenants_by_slug AS
     WHERE slug IS NOT NULL AND tenant_id IS NOT NULL
     PRIMARY KEY (slug, tenant_id);
 
+-- Slug uniqueness guard.
+-- The tenants table uses tenant_id (UUID) as its sole primary key, so the
+-- base-table LWT (IF NOT EXISTS on tenant_id) cannot enforce slug uniqueness.
+-- This companion table provides an atomic slug reservation: the first caller
+-- to INSERT with a given slug wins; all subsequent attempts are rejected.
+-- TenantStore.Create MUST succeed here before writing to cf.tenants.
+CREATE TABLE IF NOT EXISTS cf.tenant_slugs (
+    slug    TEXT,
+    PRIMARY KEY (slug)
+);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Human users  (lightweight identity layer — pre-Keycloak bridge)
+--
+-- Stores the email address and bcrypt password hash for platform operators who
+-- registered via POST /api/v1/register.  The raw password is NEVER stored.
+--
+-- Primary lookup: by user_id (UUID).
+-- Email uniqueness: enforced by LWT (IF NOT EXISTS) on the base table.
+-- Email lookup: cf.users_by_email MV resolves an email to a user_id for
+--               future login / password-reset flows.
+--
+-- Migration note: when CF-IAM (Keycloak) ships in Phase 1, user records will
+-- be migrated to Keycloak and this table deprecated.
+-- ──────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS cf.users (
+    user_id       UUID,
+    email         TEXT,
+    password_hash TEXT,       -- bcrypt hash, cost 12 — raw password never stored
+    tenant_id     UUID,       -- tenant created during registration
+    status        TEXT,       -- ACTIVE | SUSPENDED
+    created_at    TIMESTAMP,
+    updated_at    TIMESTAMP,
+    PRIMARY KEY (user_id)
+);
+
+-- Email lookup — used to enforce uniqueness and for future login/password-reset.
+CREATE MATERIALIZED VIEW IF NOT EXISTS cf.users_by_email AS
+    SELECT * FROM cf.users
+    WHERE email IS NOT NULL AND user_id IS NOT NULL
+    PRIMARY KEY (email, user_id);
+
 -- ──────────────────────────────────────────────────────────────────────────────
 -- API keys — routing hot path table
 --

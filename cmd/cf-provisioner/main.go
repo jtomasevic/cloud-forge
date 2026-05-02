@@ -39,70 +39,51 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	openbao "github.com/openbao/openbao/api/v2"
-
-	"github.com/jtomasevic/cloud-forge/internal/accounts"
-	provisionersvc "github.com/jtomasevic/cloud-forge/services/provisioner"
-	"github.com/jtomasevic/cloud-forge/services/provisioner/service"
 )
 
+// osExit is called by main() to terminate the process on error.
+// Replaced in tests to capture the exit code without calling os.Exit.
+var osExit = os.Exit //nolint:gochecknoglobals // test seam for os.Exit
+
 func main() {
+	if err := run(); err != nil {
+		osExit(1)
+	}
+}
+
+// wireFunc is the application factory called by run(). It can be replaced in
+// tests to inject a mock App without requiring live ScyllaDB / OpenBao.
+var wireFunc = Wire
+
+// run contains all startup and serving logic. Using a separate function ensures
+// that deferred cleanup (app.Shutdown) always executes, even when an error
+// forces an early return — os.Exit in main() bypasses defer.
+func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	cfg, err := configFromEnv()
 	if err != nil {
 		log.Error("invalid configuration", "err", err)
-		os.Exit(1)
+		return err
 	}
 
-	// ── ScyllaDB ─────────────────────────────────────────────────────────────
-	sess, err := accounts.NewSession(cfg.Scylla)
+	app, err := wireFunc(context.Background(), &cfg, log)
 	if err != nil {
-		log.Error("connect ScyllaDB", "err", err)
-		os.Exit(1)
+		log.Error("wire application", "err", err)
+		return err
 	}
-	defer sess.Close()
-
-	// ── OpenBao ──────────────────────────────────────────────────────────────
-	baoCfg := openbao.DefaultConfig()
-	baoCfg.Address = cfg.OpenBaoAddr
-	baoClient, err := openbao.NewClient(baoCfg)
-	if err != nil {
-		log.Error("create OpenBao client", "err", err)
-		os.Exit(1)
-	}
-	baoClient.SetToken(cfg.OpenBaoToken)
-
-	// ── Wire service and handler ─────────────────────────────────────────────
-	svc := service.New(service.Deps{
-		Tenants: accounts.NewTenantStore(sess),
-		Keys:    accounts.NewAPIKeyStore(sess),
-		Jobs:    accounts.NewJobStore(sess),
-		Bao:     baoClient,
-	})
-
-	reg := prometheus.NewRegistry()
-	router := provisionersvc.NewRouter(
-		provisionersvc.NewHandler(svc),
-		log,
-		reg,
-		"provisioner_svc",
-	)
+	defer app.Shutdown()
 
 	// ── HTTP server with graceful shutdown ───────────────────────────────────
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      router,
+		Handler:      app.Router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -121,57 +102,7 @@ func main() {
 	log.Info("cf-provisioner started", "addr", cfg.ListenAddr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("ListenAndServe", "err", err)
-		os.Exit(1)
+		return err
 	}
-}
-
-// ── Configuration ─────────────────────────────────────────────────────────────
-
-type appConfig struct {
-	Scylla       accounts.Config
-	OpenBaoAddr  string
-	OpenBaoToken string
-	ListenAddr   string
-}
-
-func configFromEnv() (appConfig, error) {
-	hosts := os.Getenv("SCYLLA_HOSTS")
-	if hosts == "" {
-		hosts = "127.0.0.1"
-	}
-
-	port := 19042
-	if p := os.Getenv("SCYLLA_PORT"); p != "" {
-		if _, err := fmt.Sscanf(p, "%d", &port); err != nil {
-			return appConfig{}, fmt.Errorf("invalid SCYLLA_PORT %q: %w", p, err)
-		}
-	}
-
-	baoAddr := os.Getenv("OPENBAO_ADDR")
-	if baoAddr == "" {
-		baoAddr = "http://localhost:8200"
-	}
-	baoToken := os.Getenv("OPENBAO_TOKEN")
-	if baoToken == "" {
-		baoToken = "dev-root-token"
-	}
-
-	listenAddr := os.Getenv("LISTEN_ADDR")
-	if listenAddr == "" {
-		listenAddr = ":8080"
-	}
-
-	return appConfig{
-		Scylla: accounts.Config{
-			Hosts:          strings.Split(hosts, ","),
-			Port:           port,
-			Username:       os.Getenv("SCYLLA_USER"),
-			Password:       os.Getenv("SCYLLA_PASS"),
-			ConnectTimeout: 10 * time.Second,
-			QueryTimeout:   5 * time.Second,
-		},
-		OpenBaoAddr:  baoAddr,
-		OpenBaoToken: baoToken,
-		ListenAddr:   listenAddr,
-	}, nil
+	return nil
 }

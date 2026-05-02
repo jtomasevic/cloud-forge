@@ -45,15 +45,15 @@ const (
 
 // ProvisioningJob is a row in cf.provisioning_jobs.
 type ProvisioningJob struct {
-	JobID          uuid.UUID
-	TenantID       uuid.UUID
+	StartedAt      time.Time
+	CompletedAt    time.Time
 	IdempotencyKey string
 	Operation      JobOperation
 	Status         JobStatus
 	ErrorMessage   string
-	Result         string // JSON blob; never contains the raw API key
-	StartedAt      time.Time
-	CompletedAt    time.Time
+	Result         string
+	JobID          uuid.UUID
+	TenantID       uuid.UUID
 }
 
 // ErrJobNotFound is returned when no job exists for the requested ID.

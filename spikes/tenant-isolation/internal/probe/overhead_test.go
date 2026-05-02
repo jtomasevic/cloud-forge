@@ -141,7 +141,7 @@ func TestRunTestResourceOverhead_Pass(t *testing.T) {
 
 	cfg := DefaultConfig()
 	// Stabilization wait and sample interval kept at 0 so the test runs instantly.
-	cfg.MaxIdleRAMMB = 512  // 160 MiB total → PASS (well under 512 threshold)
+	cfg.MaxIdleRAMMB = 512    // 160 MiB total → PASS (well under 512 threshold)
 	cfg.MaxIdleCPUMilli = 150 // 30m total → PASS
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

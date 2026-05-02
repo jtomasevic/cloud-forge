@@ -7,9 +7,17 @@
 //   - Tenant accounts (tenant_id, slug, status, CIDR allocation, plan)
 //   - API keys (hash-only storage — the raw key is never persisted)
 //   - Provisioning jobs (async job queue + state machine log)
+//   - Users (email/password-hash, linked to a tenant; pre-Keycloak identity layer)
 //
-// It does NOT own user records, service instances, or credentials for services
-// provisioned inside tenant vClusters. Those belong to separate packages.
+// User records represent human operators who register via POST /api/v1/register.
+// Password hashes are stored using bcrypt (cost 12). The raw password is never
+// persisted or logged. This is a lightweight identity store intended to bridge
+// the gap until the full Keycloak-backed CF-IAM service is built (Phase 1 of
+// the implementation plan). At that point user records will be migrated to
+// Keycloak and this package will revert to owning only tenant/key/job data.
+//
+// It does NOT own service instances or credentials for services provisioned
+// inside tenant vClusters. Those belong to separate packages.
 //
 // # ScyllaDB connection
 //
