@@ -48,6 +48,14 @@ spec:
                 echo "  not yet reachable — retrying in 5s"; sleep 5;
               done
               echo "ScyllaDB CQL port is open."
+          # Required: cf-data-quota enforces explicit resources on every container.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       containers:
         # Use the official ScyllaDB image so cqlsh is always version-matched
         # to the server.  The container runs the schema file and exits.
@@ -61,6 +69,14 @@ spec:
             - --password=cassandra
             - -f
             - /schema/schema.cql
+          # Required: cf-data-quota enforces explicit resources on every container.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           volumeMounts:
             - name: schema
               mountPath: /schema

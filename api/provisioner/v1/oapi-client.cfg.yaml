@@ -1,0 +1,15 @@
+# api/provisioner/v1/oapi-client.cfg.yaml
+#
+# oapi-codegen configuration for generating the typed Go client SDK for the
+# CloudForge Provisioner API. Other CloudForge services and CLI tools import
+# the generated client from pkg/client/provisioner/.
+#
+# Regenerate with:
+#   make gen-api SERVICE=provisioner
+package: provisionerclient
+
+generate:
+  client: true
+  models: true
+
+output: ../../../pkg/client/provisioner/client.gen.go

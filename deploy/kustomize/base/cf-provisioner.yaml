@@ -1,0 +1,238 @@
+# CloudForge Provisioner — Kubernetes Deployment and supporting resources.
+#
+# The cf-provisioner is the CloudForge control plane service responsible for:
+#   • Allocating tenant CIDR blocks (ScyllaDB LWT)
+#   • Creating per-tenant Kubernetes namespaces
+#   • Applying Cilium NetworkPolicies for tenant isolation
+#   • Provisioning vCluster instances per tenant
+#   • Storing tenant kubeconfigs in OpenBao (KV v2)
+#   • Generating and persisting tenant API keys
+#
+# Architecture placement:
+#   docs/CF-VPC-Service-Proposal.md — full design and API surface
+#   docs/4-Tenant-Isolation-and-Provisioning.md — background and context
+#
+# Image:
+#   Built locally via: make provisioner-image
+#   Loaded into k3d via: k3d image import cf-provisioner:dev -c cloudforge-dev
+#   imagePullPolicy: Never ensures k3d uses the locally loaded image.
+#
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  RBAC NOTE                                                               ║
+# ║                                                                          ║
+# ║  The provisioner holds cluster-admin in dev because it must create       ║
+# ║  namespaces, apply Cilium CRDs, and provision vCluster resources         ║
+# ║  across dynamically-created tenant namespaces.                           ║
+# ║                                                                          ║
+# ║  Production will use a tightly-scoped ClusterRole that is limited to:    ║
+# ║    • namespaces: create/delete only                                      ║
+# ║    • ciliumnetworkpolicies: create/delete in tenant- namespaces          ║
+# ║    • vCluster-specific resources (StatefulSet, PVC, SA, etc.)            ║
+# ║      within tenant namespaces only                                       ║
+# ║  This tightening will be done when client-go replaces kubectl/vcluster   ║
+# ║  shell-outs (see deploy/docker/Dockerfile.provisioner for context).      ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+---
+# ClusterRoleBinding grants the cf-system ServiceAccount cluster-admin in
+# the dev environment.  See the RBAC NOTE above before promoting to staging.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cf-provisioner-cluster-admin
+  labels:
+    app.kubernetes.io/name: cf-provisioner
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: provisioner
+    cloudforge.io/dev-only: "true"
+  annotations:
+    cloudforge.io/description: >
+      DEV ONLY — grants cluster-admin to the cf-system ServiceAccount used by
+      cf-provisioner. Must be replaced with a minimal ClusterRole in staging/prod.
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: cf-system
+    namespace: cf-system
+---
+# ConfigMap carries non-secret configuration injected into the provisioner pod.
+# Secret values (DB password, OpenBao token) are sourced from Kubernetes Secrets
+# to keep them out of ConfigMap and version control.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cf-provisioner-config
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-provisioner
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: provisioner
+data:
+  # ScyllaDB cluster address — uses the ClusterIP service created by the
+  # Scylla Operator.  See deploy/kustomize/components/scylladb/scyllacluster.yaml.
+  SCYLLA_HOSTS: "cloudforge-scylla-client.cf-data.svc.cluster.local"
+  SCYLLA_PORT: "9042"
+  SCYLLA_USER: "cloudforge_svc"
+  # OpenBao API endpoint — uses the in-cluster DNS name.  In production this
+  # will be HTTPS with mTLS.
+  OPENBAO_ADDR: "http://openbao.cf-security.svc.cluster.local:8200"
+  # Provisioner HTTP listen address.
+  LISTEN_ADDR: ":8080"
+---
+# Secret carries sensitive configuration values.  In production these would
+# be injected via an External Secrets Operator backed by OpenBao itself.
+# Dev uses static values matching the dev cluster setup.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cf-provisioner-secrets
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-provisioner
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: provisioner
+    cloudforge.io/dev-only: "true"
+  annotations:
+    cloudforge.io/description: >
+      DEV ONLY — static credentials for ScyllaDB and OpenBao.
+      In staging/production, use External Secrets Operator + OpenBao.
+type: Opaque
+stringData:
+  # ScyllaDB password — matches deploy/kustomize/components/scylladb/ setup.
+  scylla-password: "cf-dev-secret-change-in-prod"
+  # OpenBao root token — matches Secret/openbao-dev-token in cf-security.
+  # In production, replaced by Kubernetes auth (pod SA JWT → scoped token).
+  openbao-token: "dev-root-token"
+---
+# Deployment runs a single replica in dev.  For production, use multiple
+# replicas with pod anti-affinity and a PodDisruptionBudget.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cf-provisioner
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-provisioner
+    app.kubernetes.io/version: dev
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: provisioner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cf-provisioner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cf-provisioner
+        app.kubernetes.io/part-of: cloudforge
+        cloudforge.io/component: provisioner
+      annotations:
+        # Force a rollout whenever the ConfigMap or Secret change.
+        # kubectl rollout restart deployment/cf-provisioner -n cf-system
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: cf-system
+      # Mount the in-cluster kubeconfig for kubectl/vcluster shell-outs.
+      # The ServiceAccount token is automatically mounted at
+      # /var/run/secrets/kubernetes.io/serviceaccount/token.
+      automountServiceAccountToken: true
+      containers:
+        - name: cf-provisioner
+          # imagePullPolicy: Never — image must be loaded into k3d first.
+          # Use: make provisioner-image  (builds + imports into k3d)
+          image: cf-provisioner:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: cf-provisioner-config
+          env:
+            # Secret values are injected individually to allow fine-grained
+            # rotation without redeploying the entire ConfigMap.
+            - name: SCYLLA_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: cf-provisioner-secrets
+                  key: scylla-password
+            - name: OPENBAO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cf-provisioner-secrets
+                  key: openbao-token
+            # KUBERNETES_SERVICE_HOST and _PORT are set automatically when
+            # running inside a pod — kubectl uses in-cluster config by default.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # Writable tmp dir required for kubectl/vcluster to write temp files.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+---
+# Service exposes the provisioner HTTP API within the cluster.
+# External access via: kubectl port-forward -n cf-system svc/cf-provisioner 8080:8080
+# Or use: make provisioner-port-forward
+apiVersion: v1
+kind: Service
+metadata:
+  name: cf-provisioner
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-provisioner
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: provisioner
+spec:
+  selector:
+    app.kubernetes.io/name: cf-provisioner
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  type: ClusterIP

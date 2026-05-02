@@ -154,3 +154,89 @@ func TestIsolationPolicy_NoExplicitDenyRule(t *testing.T) {
 	assert.NotContains(t, s, "deny")
 	assert.NotContains(t, s, "egress") // baseline policy is ingress-only
 }
+
+// ── ProvisionerAccessPolicy ───────────────────────────────────────────────────
+
+// TestProvisionerAccessPolicy_RendersValidYAML verifies that the rendered YAML
+// contains all required fields for the provisioner-access CNP.
+func TestProvisionerAccessPolicy_RendersValidYAML(t *testing.T) {
+	out, err := provisioner.ProvisionerAccessPolicy("tenant-acme-corp")
+	require.NoError(t, err)
+	require.NotEmpty(t, out)
+
+	s := string(out)
+	assert.Contains(t, s, "apiVersion: cilium.io/v2")
+	assert.Contains(t, s, "kind: CiliumNetworkPolicy")
+	assert.Contains(t, s, "name: provisioner-access")
+	assert.Contains(t, s, "namespace: tenant-acme-corp")
+	assert.Contains(t, s, "app: vcluster")
+	assert.Contains(t, s, "io.kubernetes.pod.namespace: cf-system")
+	assert.Contains(t, s, `port: "6443"`)
+	assert.Contains(t, s, "protocol: TCP")
+}
+
+// TestProvisionerAccessPolicy_NamespaceIsInjected verifies that the namespace
+// is injected into the metadata field of the rendered YAML.
+func TestProvisionerAccessPolicy_NamespaceIsInjected(t *testing.T) {
+	namespaces := []string{"tenant-acme", "tenant-beta-corp", "cf-system"}
+	for _, ns := range namespaces {
+		t.Run(ns, func(t *testing.T) {
+			out, err := provisioner.ProvisionerAccessPolicy(ns)
+			require.NoError(t, err)
+			assert.Contains(t, string(out), "namespace: "+ns)
+		})
+	}
+}
+
+// TestProvisionerAccessPolicy_EmptyNamespaceErrors verifies that an empty
+// namespace is rejected before any template rendering occurs.
+func TestProvisionerAccessPolicy_EmptyNamespaceErrors(t *testing.T) {
+	_, err := provisioner.ProvisionerAccessPolicy("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
+}
+
+// TestProvisionerAccessPolicy_InvalidNamespaceErrors verifies that namespace
+// validation is applied consistently for ProvisionerAccessPolicy.
+func TestProvisionerAccessPolicy_InvalidNamespaceErrors(t *testing.T) {
+	_, err := provisioner.ProvisionerAccessPolicy("UPPERCASE")
+	require.Error(t, err)
+}
+
+// TestProvisionerAccessPolicy_SelectorTargetsVCluster verifies that the
+// endpointSelector targets pods with the `app: vcluster` label, not all pods
+// in the namespace. This prevents the policy from accidentally opening port
+// 6443 on non-vCluster pods.
+func TestProvisionerAccessPolicy_SelectorTargetsVCluster(t *testing.T) {
+	out, err := provisioner.ProvisionerAccessPolicy("tenant-acme-corp")
+	require.NoError(t, err)
+	s := string(out)
+
+	// Must select by app label, not empty selector.
+	assert.Contains(t, s, "app: vcluster")
+	assert.NotContains(t, s, "endpointSelector: {}")
+}
+
+// TestProvisionerAccessPolicy_SourceIsFromCFSystem verifies that the ingress
+// source is scoped to cf-system pods — not all pods in the cluster.
+// This is the narrowest permission that allows the provisioner to manage
+// vClusters while respecting the tenant isolation boundary.
+func TestProvisionerAccessPolicy_SourceIsFromCFSystem(t *testing.T) {
+	out, err := provisioner.ProvisionerAccessPolicy("tenant-acme-corp")
+	require.NoError(t, err)
+	s := string(out)
+
+	assert.Contains(t, s, "io.kubernetes.pod.namespace: cf-system")
+	// Must NOT use a wildcard or empty fromEndpoints.
+	assert.NotContains(t, s, "fromEndpoints: []")
+}
+
+// TestProvisionerAccessPolicy_DifferentNamespacesProduceDifferentOutput verifies
+// that policies for different tenants are not identical.
+func TestProvisionerAccessPolicy_DifferentNamespacesProduceDifferentOutput(t *testing.T) {
+	a, err := provisioner.ProvisionerAccessPolicy("tenant-alpha")
+	require.NoError(t, err)
+	b, err := provisioner.ProvisionerAccessPolicy("tenant-beta")
+	require.NoError(t, err)
+	assert.NotEqual(t, string(a), string(b))
+}

@@ -1,0 +1,96 @@
+# deploy/docker/Dockerfile.provisioner
+#
+# Custom Dockerfile for cf-provisioner.
+#
+# Unlike other CloudForge services that use the standard Dockerfile.service
+# (distroless), cf-provisioner must shell out to kubectl and vcluster CLI
+# to orchestrate Kubernetes namespace creation, Cilium policy application,
+# and vCluster lifecycle operations.
+#
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  DEV ARCHITECTURE NOTE                                                   ║
+# ║                                                                          ║
+# ║  Shelling out to kubectl/vcluster is a dev-time convenience.             ║
+# ║  A future iteration will replace these calls with direct client-go SDK   ║
+# ║  calls, at which point this service can use the standard distroless       ║
+# ║  Dockerfile.service instead.                                             ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+#
+# Pinned versions:
+#   kubectl   — matches k3s version in deploy/k3d/cluster.yaml (v1.31.4)
+#   vcluster  — matches the version validated in spikes/tenant-isolation
+
+# ── Stage 1: Build the Go binary ──────────────────────────────────────────────
+FROM golang:1.26-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /src
+
+# GOWORK=off: the go.work workspace file references spike sub-modules that live
+# outside the root module (spikes/nats-routing, spikes/tenant-isolation, etc.).
+# Those directories are not present in the Docker build context, so we build
+# using only the root go.mod.  This is correct for a production binary — spikes
+# are development prototypes, not production dependencies.
+ENV GOWORK=off
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build \
+      -trimpath \
+      -ldflags="-s -w \
+        -X main.version=${VERSION} \
+        -X main.commit=${COMMIT} \
+        -X main.date=${BUILD_DATE}" \
+      -o /bin/cf-provisioner \
+      ./cmd/cf-provisioner
+
+# ── Stage 2: Runtime with kubectl + vcluster ──────────────────────────────────
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates curl bash
+
+# kubectl — pinned to match k3s v1.31.4 in deploy/k3d/cluster.yaml.
+# Update this version whenever the k3s image in cluster.yaml changes.
+ARG KUBECTL_VERSION=v1.31.4
+RUN curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+      -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client --output=yaml
+
+# vcluster CLI — pinned to the version tested in spikes/tenant-isolation.
+# See spikes/tenant-isolation/FINDINGS.md for the validated version.
+ARG VCLUSTER_VERSION=v0.21.2
+RUN curl -fsSL "https://github.com/loft-sh/vcluster/releases/download/${VCLUSTER_VERSION}/vcluster-linux-amd64" \
+      -o /usr/local/bin/vcluster \
+    && chmod +x /usr/local/bin/vcluster \
+    && vcluster version
+
+# Copy the compiled binary from the builder stage.
+COPY --from=builder /bin/cf-provisioner /cf-provisioner
+
+# Standard OCI labels — values injected at build time by CI or make.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.title="cloudforge-cf-provisioner"
+LABEL org.opencontainers.image.source="https://github.com/jtomasevic/cloud-forge"
+
+# Run as non-root. UID 65532 is the conventional non-root user for distroless
+# and is safe for alpine too. kubectl/vcluster do not require root.
+RUN addgroup -g 65532 nonroot && adduser -u 65532 -G nonroot -D nonroot
+USER nonroot
+
+ENTRYPOINT ["/cf-provisioner"]

@@ -1,0 +1,31 @@
+# api/provisioner/v1/oapi-server.cfg.yaml
+#
+# oapi-codegen configuration for generating the CloudForge Provisioner API
+# server stubs. Uses "std-http" to emit a pure net/http handler with no
+# third-party router dependency — consistent with the project's stdlib convention.
+#
+# Regenerate with:
+#   make gen-api SERVICE=provisioner
+package: generated
+
+generate:
+  # std-http emits an http.Handler adapter that registers routes on a plain
+  # *http.ServeMux using Go 1.22+ METHOD /path/{param} patterns.
+  # Do NOT switch this to "chi-server" — CloudForge uses stdlib routing only.
+  std-http-server: true
+
+  # strict-server wraps the mux handler with a typed StrictServerInterface so
+  # each operation has a strongly-typed request/response contract at compile time.
+  strict-server: true
+
+  # models generates the request/response Go types from the OpenAPI schemas.
+  models: true
+
+  # embedded-spec embeds the raw OpenAPI spec as a byte slice so the running
+  # service can expose it at /openapi.json without reading from disk.
+  embedded-spec: true
+
+output: ../../../services/provisioner/generated/server.gen.go
+
+output-options:
+  skip-prune: false

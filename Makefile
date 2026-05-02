@@ -30,7 +30,7 @@ tools-check: ## Verify required dev tools are installed; install missing ones vi
 	@bash scripts/tools-check.sh
 
 .PHONY: dev-up
-dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrastructure, deploy ScyllaDB and OpenBao
+dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, OpenBao, and cf-provisioner
 	k3d cluster create --config deploy/k3d/cluster.yaml
 	k3d kubeconfig merge cloudforge-dev --kubeconfig-merge-default
 	$(MAKE) install-cilium
@@ -39,6 +39,7 @@ dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrast
 	$(MAKE) deploy-cert-manager
 	$(MAKE) deploy-scylladb
 	$(MAKE) deploy-openbao
+	$(MAKE) deploy-provisioner
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════════════╗"
 	@echo "║  CloudForge dev cluster is ready                                     ║"
@@ -47,6 +48,7 @@ dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrast
 	@echo "║    Cilium CNI     + Hubble Relay  →  make cilium-status             ║"
 	@echo "║    ScyllaDB       (cf-data)       →  make scylladb-status           ║"
 	@echo "║    OpenBao        (cf-security)   →  make openbao-status            ║"
+	@echo "║    CF-Provisioner (cf-system)     →  make provisioner-status        ║"
 	@echo "║                                                                      ║"
 	@echo "║  ⚠  OpenBao is running in DEV MODE:                                 ║"
 	@echo "║       • In-memory storage  (secrets lost on pod restart)            ║"
@@ -56,7 +58,8 @@ dev-up: tools-check ## Create k3d cluster, install Cilium CNI, bootstrap infrast
 	@echo "║     auto-unseal, persistent storage, mTLS, and Kubernetes auth.     ║"
 	@echo "║                                                                      ║"
 	@echo "║  Quick access:                                                       ║"
-	@echo "║    make openbao-port-forward   →  http://localhost:8200              ║"
+	@echo "║    make provisioner-port-forward  →  http://localhost:8080          ║"
+	@echo "║    make openbao-port-forward      →  http://localhost:8200          ║"
 	@echo "║    token: dev-root-token                                             ║"
 	@echo "╚══════════════════════════════════════════════════════════════════════╝"
 
@@ -195,6 +198,34 @@ dev-status: ## Show cluster node and pod status
 	k3d cluster list
 	kubectl get pods -A
 
+# ── cert-manager ─────────────────────────────────────────────────────────────
+
+##@ cert-manager
+
+# cert-manager is a prerequisite for the Scylla Operator, which uses
+# Certificate resources to manage TLS for its webhooks and API endpoints.
+# Must be installed (and CRDs registered) before deploy-scylladb.
+CERT_MANAGER_VERSION ?= 1.16.2
+
+.PHONY: deploy-cert-manager
+deploy-cert-manager: ## Install cert-manager (required by Scylla Operator for webhook TLS certificates)
+	@echo "── Adding cert-manager Helm repo ────────────────────────────────────"
+	helm repo add jetstack https://charts.jetstack.io --force-update
+	helm repo update jetstack
+	@echo "── Installing / upgrading cert-manager v$(CERT_MANAGER_VERSION) ─────"
+	helm upgrade --install cert-manager jetstack/cert-manager \
+		--namespace cert-manager \
+		--create-namespace \
+		--version $(CERT_MANAGER_VERSION) \
+		--set crds.enabled=true \
+		--wait
+	@echo "✓ cert-manager $(CERT_MANAGER_VERSION) ready"
+
+.PHONY: undeploy-cert-manager
+undeploy-cert-manager: ## Uninstall cert-manager and its CRDs
+	helm uninstall cert-manager --namespace cert-manager 2>/dev/null || true
+	kubectl delete namespace cert-manager 2>/dev/null || true
+
 # ── ScyllaDB ──────────────────────────────────────────────────────────────────
 
 ##@ ScyllaDB
@@ -220,15 +251,17 @@ deploy-scylladb: ## Install Scylla Operator (Helm) and provision the dev ScyllaD
 
 .PHONY: wait-scylladb
 wait-scylladb: ## Wait for ScyllaDB cluster to become Available and schema init Job to complete
-	@echo "Waiting for ScyllaCluster cloudforge-scylla to become Available (up to 5 min)..."
+	@echo "Waiting for ScyllaCluster cloudforge-scylla to become Available (up to 12 min)..."
+	@echo "   Note: first-run pulls the Scylla image (~300 MB) and initialises the cluster."
+	@echo "   On a local k3d node this typically takes 7-10 min."
 	kubectl wait scyllacluster/cloudforge-scylla \
 		--for='condition=Available' \
-		--timeout=300s \
+		--timeout=720s \
 		-n cf-data
-	@echo "Waiting for schema init Job to complete (up to 2 min)..."
+	@echo "Waiting for schema init Job to complete (up to 3 min)..."
 	kubectl wait job/scylladb-schema-init \
 		--for=condition=complete \
-		--timeout=120s \
+		--timeout=180s \
 		-n cf-data
 	@echo "✓ ScyllaDB is ready."
 
@@ -378,6 +411,174 @@ provisioner-coverage-integration: ## Full coverage (unit + integration) for inte
 	@echo "── Generating HTML report → provisioner-coverage.html ──────────────"
 	go tool cover -html=provisioner-coverage.out -o provisioner-coverage.html
 	@echo "Open provisioner-coverage.html to browse line-by-line coverage."
+
+# ── CF-Provisioner VPC Service ────────────────────────────────────────────────
+#
+# The CF-Provisioner service provisions tenant private networks (vCluster +
+# Cilium policies + CIDR allocation + kubeconfig in OpenBao + API key).
+#
+# Prerequisites:
+#   make dev-up                  # start k3d cluster with Cilium, ScyllaDB, OpenBao
+#   make scylladb-port-forward & # CQL on localhost:19042
+#   make openbao-port-forward &  # Vault API on localhost:8200
+#   kubectl apply -f internal/accounts/schema/schema.cql  # (or see scylladb-apply-schema)
+
+##@ CF-Provisioner
+
+.PHONY: provisioner-build
+provisioner-build: ## Build the cf-provisioner binary to bin/cf-provisioner
+	@mkdir -p bin
+	go build -o bin/cf-provisioner ./cmd/cf-provisioner/
+	@echo "✓ bin/cf-provisioner built"
+
+.PHONY: provisioner-run
+provisioner-run: provisioner-build ## Run cf-provisioner locally (requires port-forwards to be active)
+	@echo "── Starting cf-provisioner ──────────────────────────────────────────"
+	@echo "   Requires: make scylladb-port-forward & make openbao-port-forward"
+	@echo "   Listening on: http://localhost:8080"
+	OPENBAO_TOKEN=dev-root-token ./bin/cf-provisioner
+
+.PHONY: vpc-provision
+vpc-provision: ## Provision a tenant VPC (usage: make vpc-provision TENANT=acme-corp DISPLAY="Acme Corp" PLAN=starter)
+	$(eval TENANT ?= test-tenant)
+	$(eval DISPLAY ?= Test Tenant)
+	$(eval PLAN ?= starter)
+	@echo "── Provisioning VPC for tenant: $(TENANT) ───────────────────────────"
+	curl -sS -X POST http://localhost:8080/api/v1/vpc/provision \
+		-H "Content-Type: application/json" \
+		-d '{"tenant_id":"$(TENANT)","display_name":"$(DISPLAY)","plan":"$(PLAN)"}' | jq .
+
+.PHONY: vpc-status
+vpc-status: ## Check provisioning job status (usage: make vpc-status JOB_ID=<uuid>)
+	@if [ -z "$(JOB_ID)" ]; then echo "Usage: make vpc-status JOB_ID=<uuid>" && exit 1; fi
+	@echo "── Job status for $(JOB_ID) ─────────────────────────────────────────"
+	curl -sS http://localhost:8080/api/v1/vpc/jobs/$(JOB_ID) | jq .
+
+.PHONY: vpc-deprovision
+vpc-deprovision: ## Deprovision a tenant VPC (usage: make vpc-deprovision TENANT=acme-corp)
+	@if [ -z "$(TENANT)" ]; then echo "Usage: make vpc-deprovision TENANT=<slug>" && exit 1; fi
+	@echo "── Deprovisioning VPC for tenant: $(TENANT) ─────────────────────────"
+	curl -sS -X DELETE http://localhost:8080/api/v1/vpc/$(TENANT) | jq .
+
+.PHONY: accounts-test
+accounts-test: ## Run unit tests for internal/accounts package
+	go test -race -count=1 ./internal/accounts/...
+	@echo ""
+	@go test -cover -count=1 ./internal/accounts/... | tail -1
+
+.PHONY: accounts-test-integration
+accounts-test-integration: ## Run integration tests for internal/accounts (requires Docker)
+	@echo "── Starting ScyllaDB testcontainer + running accounts integration tests ─"
+	@echo "   Requires: Docker running on this host"
+	go test -tags=integration -race -count=1 -timeout=300s -v ./internal/accounts/...
+
+.PHONY: accounts-coverage-integration
+accounts-coverage-integration: ## Full coverage for internal/accounts (requires Docker)
+	go test -tags=integration -race -count=1 -timeout=300s \
+		-coverprofile=accounts-coverage.out -covermode=atomic \
+		./internal/accounts/...
+	@go tool cover -func=accounts-coverage.out | tail -1
+	go tool cover -html=accounts-coverage.out -o accounts-coverage.html
+	@echo "✓ Open accounts-coverage.html for line-by-line coverage"
+
+.PHONY: scylladb-apply-schema
+scylladb-apply-schema: ## Apply the CF schema to the dev ScyllaDB (requires scylladb-port-forward)
+	@echo "── Applying CF schema to ScyllaDB at localhost:19042 ────────────────"
+	@which cqlsh >/dev/null 2>&1 || (echo "cqlsh not found — install with: pip install cqlsh" && exit 1)
+	cqlsh 127.0.0.1 19042 -f internal/accounts/schema/schema.cql
+	@echo "✓ CF schema applied"
+
+# ── CF-Provisioner cluster deployment ────────────────────────────────────────
+#
+# The deploy-provisioner target is the canonical way to build and deploy the
+# provisioner service into the local k3d cluster.  It is called automatically
+# by dev-up so you always get a fresh image after a cluster reset.
+#
+# Image lifecycle:
+#   provisioner-image    → docker build + k3d image import  (local only)
+#   deploy-provisioner   → provisioner-image + kubectl apply + rollout wait
+#   undeploy-provisioner → kubectl delete
+#
+# Access:
+#   make provisioner-port-forward   → HTTP API on localhost:8080
+#   make provisioner-status         → pod status + health check
+#   make provisioner-logs           → follow pod logs
+
+##@ CF-Provisioner (Deployment)
+
+.PHONY: provisioner-image
+provisioner-image: ## Build cf-provisioner Docker image and load it into the k3d cluster
+	@echo "── Building cf-provisioner Docker image ────────────────────────────"
+	@echo "   Note: first build downloads kubectl + vcluster binaries (~100 MB)"
+	docker build \
+		-f deploy/docker/Dockerfile.provisioner \
+		-t cf-provisioner:dev \
+		--build-arg VERSION=dev \
+		--build-arg COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+		--build-arg BUILD_DATE=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+		.
+	@echo "── Loading image into k3d cluster cloudforge-dev ───────────────────"
+	k3d image import cf-provisioner:dev --cluster cloudforge-dev
+	@echo "✓ cf-provisioner:dev loaded into k3d"
+
+.PHONY: deploy-provisioner
+deploy-provisioner: provisioner-image ## Build image, load into k3d, and deploy cf-provisioner to cf-system namespace
+	@echo "── Applying cf-provisioner manifest ────────────────────────────────"
+	kubectl apply -f deploy/kustomize/base/cf-provisioner.yaml
+	@echo "── Waiting for cf-provisioner rollout (up to 120s) ─────────────────"
+	kubectl rollout status deployment/cf-provisioner -n cf-system --timeout=120s
+	@echo ""
+	@echo "✓ cf-provisioner is running"
+	@echo "  Namespace       : cf-system"
+	@echo "  Health check    : kubectl exec ... or make provisioner-port-forward"
+	@echo "  Port-forward    : make provisioner-port-forward"
+	@echo "  Logs            : make provisioner-logs"
+	@echo "  API             : POST http://localhost:8080/api/v1/vpc/provision"
+
+.PHONY: undeploy-provisioner
+undeploy-provisioner: ## Remove cf-provisioner deployment, service, config and RBAC from the cluster
+	kubectl delete -f deploy/kustomize/base/cf-provisioner.yaml --ignore-not-found
+	@echo "✓ cf-provisioner removed"
+
+.PHONY: provisioner-status
+provisioner-status: ## Show cf-provisioner pod, rollout status, and health check
+	@echo "── cf-provisioner deployment ───────────────────────────────────────"
+	kubectl get deployment cf-provisioner -n cf-system 2>/dev/null \
+		|| echo "  (not deployed — run: make deploy-provisioner)"
+	@echo ""
+	@echo "── Pod ─────────────────────────────────────────────────────────────"
+	kubectl get pods -n cf-system -l app.kubernetes.io/name=cf-provisioner -o wide 2>/dev/null \
+		|| echo "  (no pod found)"
+	@echo ""
+	@echo "── Health check (requires provisioner-port-forward) ────────────────"
+	@curl -sf http://localhost:8080/healthz 2>/dev/null \
+		|| echo "  (not reachable — run: make provisioner-port-forward in another terminal)"
+
+.PHONY: provisioner-port-forward
+provisioner-port-forward: ## Forward cf-provisioner HTTP API to localhost:8080 (keep terminal open)
+	@echo "── Forwarding cf-provisioner API → localhost:8080 ───────────────────"
+	@echo "   API: POST http://localhost:8080/api/v1/vpc/provision"
+	@echo "   API: GET  http://localhost:8080/api/v1/vpc/jobs/{job_id}"
+	@echo "   API: DEL  http://localhost:8080/api/v1/vpc/{tenant_id}"
+	@echo "   Health: GET http://localhost:8080/healthz"
+	@echo "   Press Ctrl-C to stop."
+	@kubectl get pod -n cf-system -l app.kubernetes.io/name=cf-provisioner --no-headers 2>/dev/null | grep -q Running \
+		|| (echo "ERROR: cf-provisioner pod is not running — run: make deploy-provisioner" && exit 1)
+	kubectl port-forward -n cf-system svc/cf-provisioner 8080:8080
+
+.PHONY: provisioner-logs
+provisioner-logs: ## Follow cf-provisioner pod logs (structured JSON; use jq for pretty output)
+	@echo "── cf-provisioner logs (Ctrl-C to stop) ────────────────────────────"
+	@echo "   Tip: pipe through jq for pretty output:"
+	@echo "     make provisioner-logs 2>&1 | jq ."
+	kubectl logs -n cf-system -l app.kubernetes.io/name=cf-provisioner --follow --tail=100
+
+.PHONY: provisioner-redeploy
+provisioner-redeploy: provisioner-image ## Rebuild image and do a rolling restart without deleting the deployment
+	@echo "── Triggering rolling restart of cf-provisioner ────────────────────"
+	kubectl rollout restart deployment/cf-provisioner -n cf-system
+	kubectl rollout status deployment/cf-provisioner -n cf-system --timeout=120s
+	@echo "✓ cf-provisioner redeployed with latest image"
 
 # ── Linting and formatting ────────────────────────────────────────────────────
 

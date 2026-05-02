@@ -93,15 +93,19 @@ CREATE TABLE IF NOT EXISTS cloudforge_platform.resource_bindings (
 -- A MV is a full replica of the data with a different partition key — point
 -- lookups remain single-partition regardless of cluster size.
 -- -----------------------------------------------------------------------------
+-- ScyllaDB MV constraint: only ONE non-primary-key column from the base table
+-- may be added to the MV primary key.  The base table PK is (tenant_id,
+-- binding_key), so we can only add target_kind here.
+-- Queries that also need to filter by target_name do so in application code
+-- after a range scan on (tenant_id, target_kind).
 CREATE MATERIALIZED VIEW IF NOT EXISTS cloudforge_platform.resource_bindings_by_target AS
     SELECT *
     FROM cloudforge_platform.resource_bindings
     WHERE tenant_id   IS NOT NULL
       AND binding_key  IS NOT NULL
       AND target_kind  IS NOT NULL
-      AND target_name  IS NOT NULL
     PRIMARY KEY (
-        (tenant_id, target_kind, target_name),
+        (tenant_id, target_kind),
         binding_key
     )
     WITH CLUSTERING ORDER BY (binding_key ASC);
