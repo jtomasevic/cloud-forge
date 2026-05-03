@@ -83,7 +83,7 @@ func TestAssembleApp_ReturnsWiredApp(t *testing.T) {
 	closeSessionCalled := false
 	closeSession := func() { closeSessionCalled = true }
 
-	app := assembleApp(nil, baoClient, closeSession, slog.Default())
+	app := assembleApp(nil, baoClient, closeSession, slog.Default(), nil)
 
 	require.NotNil(t, app)
 	assert.NotNil(t, app.Router)

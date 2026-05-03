@@ -61,9 +61,13 @@ dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, Open
 	@echo "║                                                                      ║"
 	@echo "║  Quick access:                                                       ║"
 	@echo "║    make accounts-port-forward    →  http://localhost:8082           ║"
-	@echo "║    make provisioner-port-forward →  http://localhost:8080           ║"
+	@echo "║    make provisioner-port-forward →  http://localhost:8084           ║"
 	@echo "║    make openbao-port-forward     →  http://localhost:8200           ║"
 	@echo "║    token: dev-root-token                                             ║"
+	@echo "║                                                                      ║"
+	@echo "║  Local dev (no cluster):                                             ║"
+	@echo "║    make start-core-services  →  runs services directly on host      ║"
+	@echo "║    make stop-core-services   →  stop them                           ║"
 	@echo "╚══════════════════════════════════════════════════════════════════════╝"
 
 .PHONY: install-cilium
@@ -438,7 +442,7 @@ provisioner-build: ## Build the cf-provisioner binary to bin/cf-provisioner
 provisioner-run: provisioner-build ## Run cf-provisioner locally (requires port-forwards to be active)
 	@echo "── Starting cf-provisioner ──────────────────────────────────────────"
 	@echo "   Requires: make scylladb-port-forward & make openbao-port-forward"
-	@echo "   Listening on: http://localhost:8080"
+	@echo "   Listening on: http://localhost:8084"
 	OPENBAO_TOKEN=dev-root-token ./bin/cf-provisioner
 
 .PHONY: vpc-provision
@@ -447,7 +451,7 @@ vpc-provision: ## Provision a tenant VPC (usage: make vpc-provision TENANT=acme-
 	$(eval DISPLAY ?= Test Tenant)
 	$(eval PLAN ?= starter)
 	@echo "── Provisioning VPC for tenant: $(TENANT) ───────────────────────────"
-	curl -sS -X POST http://localhost:8080/api/v1/vpc/provision \
+	curl -sS -X POST http://localhost:8084/api/v1/vpc/provision \
 		-H "Content-Type: application/json" \
 		-d '{"tenant_id":"$(TENANT)","display_name":"$(DISPLAY)","plan":"$(PLAN)"}' | jq .
 
@@ -455,13 +459,13 @@ vpc-provision: ## Provision a tenant VPC (usage: make vpc-provision TENANT=acme-
 vpc-status: ## Check provisioning job status (usage: make vpc-status JOB_ID=<uuid>)
 	@if [ -z "$(JOB_ID)" ]; then echo "Usage: make vpc-status JOB_ID=<uuid>" && exit 1; fi
 	@echo "── Job status for $(JOB_ID) ─────────────────────────────────────────"
-	curl -sS http://localhost:8080/api/v1/vpc/jobs/$(JOB_ID) | jq .
+	curl -sS http://localhost:8084/api/v1/vpc/jobs/$(JOB_ID) | jq .
 
 .PHONY: vpc-deprovision
 vpc-deprovision: ## Deprovision a tenant VPC (usage: make vpc-deprovision TENANT=acme-corp)
 	@if [ -z "$(TENANT)" ]; then echo "Usage: make vpc-deprovision TENANT=<slug>" && exit 1; fi
 	@echo "── Deprovisioning VPC for tenant: $(TENANT) ─────────────────────────"
-	curl -sS -X DELETE http://localhost:8080/api/v1/vpc/$(TENANT) | jq .
+	curl -sS -X DELETE http://localhost:8084/api/v1/vpc/$(TENANT) | jq .
 
 .PHONY: accounts-test
 accounts-test: ## Run unit tests for internal/accounts package
@@ -503,7 +507,7 @@ scylladb-apply-schema: ## Apply the CF schema to the dev ScyllaDB (requires scyl
 #   undeploy-provisioner → kubectl delete
 #
 # Access:
-#   make provisioner-port-forward   → HTTP API on localhost:8080
+#   make provisioner-port-forward   → HTTP API on localhost:8084
 #   make provisioner-status         → pod status + health check
 #   make provisioner-logs           → follow pod logs
 
@@ -536,7 +540,7 @@ deploy-provisioner: provisioner-image ## Build image, load into k3d, and deploy 
 	@echo "  Health check    : kubectl exec ... or make provisioner-port-forward"
 	@echo "  Port-forward    : make provisioner-port-forward"
 	@echo "  Logs            : make provisioner-logs"
-	@echo "  API             : POST http://localhost:8080/api/v1/vpc/provision"
+	@echo "  API             : POST http://localhost:8084/api/v1/vpc/provision"
 
 .PHONY: undeploy-provisioner
 undeploy-provisioner: ## Remove cf-provisioner deployment, service, config and RBAC from the cluster
@@ -554,20 +558,20 @@ provisioner-status: ## Show cf-provisioner pod, rollout status, and health check
 		|| echo "  (no pod found)"
 	@echo ""
 	@echo "── Health check (requires provisioner-port-forward) ────────────────"
-	@curl -sf http://localhost:8080/healthz 2>/dev/null \
+	@curl -sf http://localhost:8084/healthz 2>/dev/null \
 		|| echo "  (not reachable — run: make provisioner-port-forward in another terminal)"
 
 .PHONY: provisioner-port-forward
-provisioner-port-forward: ## Forward cf-provisioner HTTP API to localhost:8080 (keep terminal open)
-	@echo "── Forwarding cf-provisioner API → localhost:8080 ───────────────────"
-	@echo "   API: POST http://localhost:8080/api/v1/vpc/provision"
-	@echo "   API: GET  http://localhost:8080/api/v1/vpc/jobs/{job_id}"
-	@echo "   API: DEL  http://localhost:8080/api/v1/vpc/{tenant_id}"
-	@echo "   Health: GET http://localhost:8080/healthz"
+provisioner-port-forward: ## Forward cf-provisioner HTTP API to localhost:8084 (keep terminal open)
+	@echo "── Forwarding cf-provisioner API → localhost:8084 ───────────────────"
+	@echo "   API: POST http://localhost:8084/api/v1/vpc/provision"
+	@echo "   API: GET  http://localhost:8084/api/v1/vpc/jobs/{job_id}"
+	@echo "   API: DEL  http://localhost:8084/api/v1/vpc/{tenant_id}"
+	@echo "   Health: GET http://localhost:8084/healthz"
 	@echo "   Press Ctrl-C to stop."
 	@kubectl get pod -n cf-system -l app.kubernetes.io/name=cf-provisioner --no-headers 2>/dev/null | grep -q Running \
 		|| (echo "ERROR: cf-provisioner pod is not running — run: make deploy-provisioner" && exit 1)
-	kubectl port-forward -n cf-system svc/cf-provisioner 8080:8080
+	kubectl port-forward -n cf-system svc/cf-provisioner 8084:8080
 
 .PHONY: provisioner-logs
 provisioner-logs: ## Follow cf-provisioner pod logs (structured JSON; use jq for pretty output)
@@ -680,6 +684,120 @@ accounts-redeploy: accounts-image ## Rebuild image and do a rolling restart of c
 	kubectl rollout restart deployment/cf-accounts -n cf-system
 	kubectl rollout status deployment/cf-accounts -n cf-system --timeout=120s
 	@echo "✓ cf-accounts redeployed with latest image"
+
+# ── Core Services (local dev — runs directly on the host, no cluster needed) ──
+#
+# These targets build and run cf-accounts and cf-provisioner as background
+# processes on the local machine.  No k3d cluster or port-forwarding is
+# required — the binaries listen directly on their configured host ports.
+#
+# Prerequisites (must be running before starting services):
+#   make scylladb-port-forward &   →  ScyllaDB CQL on localhost:19042
+#   make openbao-port-forward  &   →  OpenBao API  on localhost:8200
+#
+# PID files are stored in .run/ (git-ignored).
+# Log files are streamed to .run/cf-*.log.
+#
+# After startup, each service prints a box with all reachable addresses.
+
+##@ Core Services
+
+ACCOUNTS_PID    := .run/cf-accounts.pid
+PROVISIONER_PID := .run/cf-provisioner.pid
+ACCOUNTS_LOG    := .run/cf-accounts.log
+PROVISIONER_LOG := .run/cf-provisioner.log
+
+# DEV_UI_ORIGIN is the origin the browser UI runs on.  Adjust if your Vite
+# dev server uses a different port.
+DEV_UI_ORIGIN ?= http://localhost:8096
+
+.PHONY: start-accounts
+start-accounts: accounts-build ## Build and start cf-accounts in the background (logs → .run/cf-accounts.log)
+	@mkdir -p .run
+	@if [ -f $(ACCOUNTS_PID) ] && kill -0 $$(cat $(ACCOUNTS_PID)) 2>/dev/null; then \
+	  echo "  cf-accounts is already running (PID $$(cat $(ACCOUNTS_PID)))"; exit 0; \
+	fi
+	OPENBAO_TOKEN=dev-root-token \
+	DEV_CORS_ORIGINS=$(DEV_UI_ORIGIN) \
+	SCYLLA_USER=cloudforge_svc \
+	SCYLLA_PASS=$${CF_SCYLLA_PASSWORD:-cf-dev-secret-change-in-prod} \
+	  ./bin/cf-accounts >> $(ACCOUNTS_LOG) 2>&1 & echo $$! > $(ACCOUNTS_PID)
+	@sleep 1
+	@echo ""
+	@echo "  cf-accounts  →  http://localhost:8082/api/v1"
+	@echo "  Swagger      →  http://localhost:8082/api/v1/docs"
+	@echo "  Health       →  http://localhost:8082/healthz"
+	@echo "  Logs         →  tail -f $(ACCOUNTS_LOG)"
+	@echo ""
+
+.PHONY: stop-accounts
+stop-accounts: ## Stop the background cf-accounts process
+	@if [ -f $(ACCOUNTS_PID) ]; then \
+	  PID=$$(cat $(ACCOUNTS_PID)); \
+	  kill $$PID 2>/dev/null && echo "  cf-accounts stopped (PID $$PID)" || echo "  cf-accounts was not running"; \
+	  rm -f $(ACCOUNTS_PID); \
+	else \
+	  echo "  cf-accounts is not running"; \
+	fi
+
+.PHONY: restart-accounts
+restart-accounts: stop-accounts start-accounts ## Rebuild and restart cf-accounts
+
+.PHONY: start-provisioner
+start-provisioner: provisioner-build ## Build and start cf-provisioner in the background (logs → .run/cf-provisioner.log)
+	@mkdir -p .run
+	@if [ -f $(PROVISIONER_PID) ] && kill -0 $$(cat $(PROVISIONER_PID)) 2>/dev/null; then \
+	  echo "  cf-provisioner is already running (PID $$(cat $(PROVISIONER_PID)))"; exit 0; \
+	fi
+	OPENBAO_TOKEN=dev-root-token \
+	DEV_CORS_ORIGINS=$(DEV_UI_ORIGIN) \
+	SCYLLA_USER=cloudforge_svc \
+	SCYLLA_PASS=$${CF_SCYLLA_PASSWORD:-cf-dev-secret-change-in-prod} \
+	  ./bin/cf-provisioner >> $(PROVISIONER_LOG) 2>&1 & echo $$! > $(PROVISIONER_PID)
+	@sleep 1
+	@echo ""
+	@echo "  cf-provisioner  →  http://localhost:8084/api/v1"
+	@echo "  Swagger         →  http://localhost:8084/api/v1/docs"
+	@echo "  Health          →  http://localhost:8084/healthz"
+	@echo "  Logs            →  tail -f $(PROVISIONER_LOG)"
+	@echo ""
+
+.PHONY: stop-provisioner
+stop-provisioner: ## Stop the background cf-provisioner process
+	@if [ -f $(PROVISIONER_PID) ]; then \
+	  PID=$$(cat $(PROVISIONER_PID)); \
+	  kill $$PID 2>/dev/null && echo "  cf-provisioner stopped (PID $$PID)" || echo "  cf-provisioner was not running"; \
+	  rm -f $(PROVISIONER_PID); \
+	else \
+	  echo "  cf-provisioner is not running"; \
+	fi
+
+.PHONY: restart-provisioner
+restart-provisioner: stop-provisioner start-provisioner ## Rebuild and restart cf-provisioner
+
+.PHONY: start-core-services
+start-core-services: start-accounts start-provisioner ## Start accounts then provisioner (correct dependency order)
+	@echo ""
+	@echo "  ┌──────────────────────────────────────────────────────────────┐"
+	@echo "  │  Core services running                                       │"
+	@echo "  │                                                              │"
+	@echo "  │  Accounts                                                    │"
+	@echo "  │    API     →  http://localhost:8082/api/v1                   │"
+	@echo "  │    Swagger →  http://localhost:8082/api/v1/docs              │"
+	@echo "  │                                                              │"
+	@echo "  │  Provisioner                                                 │"
+	@echo "  │    API     →  http://localhost:8084/api/v1                   │"
+	@echo "  │    Swagger →  http://localhost:8084/api/v1/docs              │"
+	@echo "  │                                                              │"
+	@echo "  │  UI origin (CORS allowed): $(DEV_UI_ORIGIN)                           │"
+	@echo "  └──────────────────────────────────────────────────────────────┘"
+	@echo ""
+
+.PHONY: stop-core-services
+stop-core-services: stop-provisioner stop-accounts ## Stop provisioner then accounts
+
+.PHONY: restart-core-services
+restart-core-services: stop-core-services start-core-services ## Rebuild and restart both core services
 
 # ── Linting and formatting ────────────────────────────────────────────────────
 

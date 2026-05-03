@@ -344,3 +344,53 @@ func TestRequestIDFromContext_Empty(t *testing.T) {
 	id := middleware.RequestIDFromContext(context.Background())
 	assert.Empty(t, id)
 }
+
+// ── ChainWithCORS tests ────────────────────────────────────────────────────
+
+// TestChainWithCORS_NilOrigins verifies that passing nil (or empty) origins
+// returns the base chain without a CORS middleware prepended.
+func TestChainWithCORS_NilOrigins(t *testing.T) {
+	logger := logging.New(logging.Config{ServiceName: "cors-test", Format: logging.FormatText})
+	registry := metrics.NewRegistry("cors_nil_test")
+
+	chain := middleware.ChainWithCORS(nil, logger, registry, "cors_nil_test")
+	base := middleware.Chain(logger, registry, "cors_nil_test_base")
+
+	// Both should produce the same number of middlewares (no CORS layer added).
+	assert.Equal(t, len(base), len(chain))
+}
+
+// TestChainWithCORS_WithOrigins verifies that passing a non-empty origins list
+// prepends a CORS middleware so the returned chain is one element longer.
+func TestChainWithCORS_WithOrigins(t *testing.T) {
+	logger := logging.New(logging.Config{ServiceName: "cors-test", Format: logging.FormatText})
+	registry := metrics.NewRegistry("cors_origins_test")
+
+	chain := middleware.ChainWithCORS([]string{"http://localhost:8096"}, logger, registry, "cors_origins_test")
+	base := middleware.Chain(logger, registry, "cors_origins_test_base")
+
+	assert.Equal(t, len(base)+1, len(chain), "CORS middleware must be prepended")
+}
+
+// TestChainWithCORS_CORSHeadersPresent is an end-to-end smoke test that runs
+// a request through a ChainWithCORS-built chain and confirms the CORS headers
+// are actually present in the response.
+func TestChainWithCORS_CORSHeadersPresent(t *testing.T) {
+	const origin = "http://localhost:8096"
+
+	logger := logging.New(logging.Config{ServiceName: "cors-e2e", Format: logging.FormatText})
+	registry := metrics.NewRegistry("cors_e2e")
+	chain := middleware.ChainWithCORS([]string{origin}, logger, registry, "cors_e2e")
+
+	handler := chain.Apply(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)
+	req.Header.Set("Origin", origin)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, origin, w.Header().Get("Access-Control-Allow-Origin"))
+}

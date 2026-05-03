@@ -94,7 +94,7 @@ func TestAssembleApp_ReturnsWiredApp(t *testing.T) {
 	closeSession := func() { closeSessionCalled = true }
 
 	// Pass nil session — stores don't issue queries during construction.
-	app := assembleApp(nil, baoClient, closeSession, slog.Default())
+	app := assembleApp(nil, baoClient, closeSession, slog.Default(), nil)
 
 	require.NotNil(t, app, "assembleApp must return a non-nil App")
 	assert.NotNil(t, app.Router, "Router must be set")

@@ -24,6 +24,9 @@ profile.cov
 kubeconfig
 .dev/
 
+# Local dev runtime (PID files, service logs from make start-*)
+.run/
+
 # Editor / IDE
 .idea/
 .vscode/

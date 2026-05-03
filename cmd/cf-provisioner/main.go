@@ -39,10 +39,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -100,9 +102,30 @@ func run() error {
 	}()
 
 	log.Info("cf-provisioner started", "addr", cfg.ListenAddr)
+	printDevAddresses("cf-provisioner", cfg.ListenAddr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("ListenAndServe", "err", err)
 		return err
 	}
 	return nil
+}
+
+// printDevAddresses prints a developer-friendly startup box with all reachable
+// addresses for this service. The box is intentionally plain text (not JSON)
+// so it stands out against the structured log output.
+func printDevAddresses(svcName, listenAddr string) {
+	base := listenAddr
+	if strings.HasPrefix(base, ":") {
+		base = "http://localhost" + base
+	}
+	fmt.Printf("\n")
+	fmt.Printf("  ┌─────────────────────────────────────────────────────┐\n")
+	fmt.Printf("  │  %-51s│\n", svcName+" ready")
+	fmt.Printf("  │                                                     │\n")
+	fmt.Printf("  │  API     →  %-39s│\n", base+"/api/v1")
+	fmt.Printf("  │  Swagger →  %-39s│\n", base+"/api/v1/docs")
+	fmt.Printf("  │  Spec    →  %-39s│\n", base+"/api/v1/openapi.yaml")
+	fmt.Printf("  │  Health  →  %-39s│\n", base+"/healthz")
+	fmt.Printf("  └─────────────────────────────────────────────────────┘\n")
+	fmt.Printf("\n")
 }

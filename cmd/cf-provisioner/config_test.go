@@ -23,7 +23,7 @@ func TestConfigFromEnv_Defaults(t *testing.T) {
 	assert.Equal(t, 19042, cfg.Scylla.Port)
 	assert.Equal(t, "http://localhost:8200", cfg.OpenBaoAddr)
 	assert.Equal(t, "dev-root-token", cfg.OpenBaoToken)
-	assert.Equal(t, ":8080", cfg.ListenAddr)
+	assert.Equal(t, ":8084", cfg.ListenAddr)
 	assert.Empty(t, cfg.Scylla.Username)
 	assert.Empty(t, cfg.Scylla.Password)
 }
@@ -67,4 +67,28 @@ func TestConfigFromEnv_TimeoutsArePositive(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, cfg.Scylla.ConnectTimeout.Milliseconds(), int64(0))
 	assert.Greater(t, cfg.Scylla.QueryTimeout.Milliseconds(), int64(0))
+}
+
+func TestConfigFromEnv_DEVCORSOrigins(t *testing.T) {
+	t.Setenv("SCYLLA_HOSTS", "")
+	t.Setenv("SCYLLA_PORT", "")
+	t.Setenv("DEV_CORS_ORIGINS", "http://localhost:3000, http://localhost:8096 , ")
+
+	cfg, err := configFromEnv()
+
+	require.NoError(t, err)
+	require.Len(t, cfg.DevCORSOrigins, 2)
+	assert.Equal(t, "http://localhost:3000", cfg.DevCORSOrigins[0])
+	assert.Equal(t, "http://localhost:8096", cfg.DevCORSOrigins[1])
+}
+
+func TestConfigFromEnv_NoCORSOrigins(t *testing.T) {
+	t.Setenv("SCYLLA_HOSTS", "")
+	t.Setenv("SCYLLA_PORT", "")
+	t.Setenv("DEV_CORS_ORIGINS", "")
+
+	cfg, err := configFromEnv()
+
+	require.NoError(t, err)
+	assert.Empty(t, cfg.DevCORSOrigins)
 }
