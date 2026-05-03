@@ -25,15 +25,15 @@ func TestCIDRFormat(t *testing.T) {
 	podSupernet, svcSupernet, err := parsedSupernets()
 	require.NoError(t, err)
 
-	tests := []struct {
-		index   int
+	tests := []struct { //nolint:govet // field order optimised for readability in table-driven tests
 		wantPod string
 		wantSvc string
+		index   int
 	}{
-		{1, "10.100.1.0/24", "10.200.1.0/24"},
-		{2, "10.100.2.0/24", "10.200.2.0/24"},
-		{100, "10.100.100.0/24", "10.200.100.0/24"},
-		{254, "10.100.254.0/24", "10.200.254.0/24"},
+		{wantPod: "10.100.1.0/24", wantSvc: "10.200.1.0/24", index: 1},
+		{wantPod: "10.100.2.0/24", wantSvc: "10.200.2.0/24", index: 2},
+		{wantPod: "10.100.100.0/24", wantSvc: "10.200.100.0/24", index: 100},
+		{wantPod: "10.100.254.0/24", wantSvc: "10.200.254.0/24", index: 254},
 	}
 
 	for _, tc := range tests {

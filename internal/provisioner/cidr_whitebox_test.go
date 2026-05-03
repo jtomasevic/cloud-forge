@@ -23,9 +23,9 @@ import (
 // LWT IF NOT EXISTS semantics: TryAllocate returns false if the CIDR is already
 // in the map.
 type fakeCIDRDB struct {
-	allocated map[string]bool // cidr → allocated?
-	allocErr  error           // if non-nil, TryAllocate returns this error
-	releaseErr error          // if non-nil, Release returns this error
+	allocated  map[string]bool // cidr → allocated?
+	allocErr   error           // if non-nil, TryAllocate returns this error
+	releaseErr error           // if non-nil, Release returns this error
 }
 
 func newFakeCIDRDB() *fakeCIDRDB {

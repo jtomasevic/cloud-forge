@@ -36,10 +36,15 @@ import (
 // mockClient returns a *openbao.Client configured to talk to the provided
 // httptest server. The token is set to an arbitrary non-empty value to satisfy
 // the SDK's auth header requirement.
+//
+// MaxRetries is set to 0 so that error responses (e.g. 500) are returned
+// immediately without the SDK retrying, which would otherwise cause tests
+// to hang for several seconds each and risk breaching CI timeouts.
 func mockClient(t *testing.T, srv *httptest.Server) *openbao.Client {
 	t.Helper()
 	cfg := openbao.DefaultConfig()
 	cfg.Address = srv.URL
+	cfg.MaxRetries = 0
 	client, err := openbao.NewClient(cfg)
 	require.NoError(t, err)
 	client.SetToken("test-token")

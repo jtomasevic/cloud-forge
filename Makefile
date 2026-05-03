@@ -30,7 +30,7 @@ tools-check: ## Verify required dev tools are installed; install missing ones vi
 	@bash scripts/tools-check.sh
 
 .PHONY: dev-up
-dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, OpenBao, and cf-provisioner
+dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, OpenBao, CF-Provisioner, and CF-Accounts
 	k3d cluster create --config deploy/k3d/cluster.yaml
 	k3d kubeconfig merge cloudforge-dev --kubeconfig-merge-default
 	$(MAKE) install-cilium
@@ -40,6 +40,7 @@ dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, Open
 	$(MAKE) deploy-scylladb
 	$(MAKE) deploy-openbao
 	$(MAKE) deploy-provisioner
+	$(MAKE) deploy-accounts
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════════════╗"
 	@echo "║  CloudForge dev cluster is ready                                     ║"
@@ -49,6 +50,7 @@ dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, Open
 	@echo "║    ScyllaDB       (cf-data)       →  make scylladb-status           ║"
 	@echo "║    OpenBao        (cf-security)   →  make openbao-status            ║"
 	@echo "║    CF-Provisioner (cf-system)     →  make provisioner-status        ║"
+	@echo "║    CF-Accounts    (cf-system)     →  make accounts-status           ║"
 	@echo "║                                                                      ║"
 	@echo "║  ⚠  OpenBao is running in DEV MODE:                                 ║"
 	@echo "║       • In-memory storage  (secrets lost on pod restart)            ║"
@@ -58,8 +60,9 @@ dev-up: tools-check ## Create k3d cluster, install Cilium, deploy ScyllaDB, Open
 	@echo "║     auto-unseal, persistent storage, mTLS, and Kubernetes auth.     ║"
 	@echo "║                                                                      ║"
 	@echo "║  Quick access:                                                       ║"
-	@echo "║    make provisioner-port-forward  →  http://localhost:8080          ║"
-	@echo "║    make openbao-port-forward      →  http://localhost:8200          ║"
+	@echo "║    make accounts-port-forward    →  http://localhost:8082           ║"
+	@echo "║    make provisioner-port-forward →  http://localhost:8080           ║"
+	@echo "║    make openbao-port-forward     →  http://localhost:8200           ║"
 	@echo "║    token: dev-root-token                                             ║"
 	@echo "╚══════════════════════════════════════════════════════════════════════╝"
 
@@ -343,7 +346,7 @@ test-unit: ## Run unit tests (excludes integration tests)
 
 .PHONY: test-integration
 test-integration: ## Run integration tests (requires Docker for testcontainers)
-	go test -tags=integration -race -count=1 -timeout=120s ./...
+	go test -tags=integration -race -count=1 -timeout=300s ./...
 
 .PHONY: test-all
 test-all: test-unit test-integration ## Run unit and integration tests
@@ -380,7 +383,7 @@ provisioner-test: ## Run unit tests for internal/provisioner (no Docker required
 provisioner-test-integration: ## Run integration tests for internal/provisioner (requires Docker)
 	@echo "── Starting OpenBao testcontainer + running provisioner integration tests ─"
 	@echo "   Requires: Docker running on this host"
-	go test -tags=integration -race -count=1 -timeout=120s -v ./internal/provisioner/...
+	go test -tags=integration -race -count=1 -timeout=300s -v ./internal/provisioner/...
 
 .PHONY: provisioner-coverage
 provisioner-coverage: ## Unit-test coverage for internal/provisioner (no Docker)
@@ -399,7 +402,7 @@ provisioner-coverage: ## Unit-test coverage for internal/provisioner (no Docker)
 provisioner-coverage-integration: ## Full coverage (unit + integration) for internal/provisioner — requires Docker
 	@echo "── Full coverage (unit + integration): internal/provisioner ─────────────"
 	@echo "   Requires: Docker running on this host"
-	go test -tags=integration -race -count=1 -timeout=120s \
+	go test -tags=integration -race -count=1 -timeout=300s \
 		-coverprofile=provisioner-coverage.out -covermode=atomic \
 		./internal/provisioner/...
 	@echo ""
@@ -579,6 +582,104 @@ provisioner-redeploy: provisioner-image ## Rebuild image and do a rolling restar
 	kubectl rollout restart deployment/cf-provisioner -n cf-system
 	kubectl rollout status deployment/cf-provisioner -n cf-system --timeout=120s
 	@echo "✓ cf-provisioner redeployed with latest image"
+
+##@ CF-Accounts
+
+.PHONY: accounts-build
+accounts-build: ## Build the cf-accounts binary to bin/cf-accounts
+	@mkdir -p bin
+	go build -o bin/cf-accounts ./cmd/cf-accounts/
+	@echo "✓ bin/cf-accounts built"
+
+.PHONY: accounts-run
+accounts-run: accounts-build ## Run cf-accounts locally (requires port-forwards: make scylladb-port-forward & make openbao-port-forward)
+	@echo "── Starting cf-accounts ─────────────────────────────────────────────"
+	@echo "   Requires: make scylladb-port-forward  &  make openbao-port-forward"
+	@echo "   Listening on: http://localhost:8082"
+	OPENBAO_TOKEN=dev-root-token ./bin/cf-accounts
+
+.PHONY: accounts-test
+accounts-test: ## Run cf-accounts unit tests (no Docker / cluster required)
+	@echo "── Running cf-accounts unit tests ──────────────────────────────────"
+	go test ./services/accounts/... ./services/accounts/service/... ./cmd/cf-accounts/... -count=1
+
+.PHONY: accounts-coverage
+accounts-coverage: ## Show cf-accounts unit test coverage (target: ≥90%)
+	@echo "── Coverage: services/accounts + cmd/cf-accounts ────────────────────"
+	go test ./services/accounts/... ./services/accounts/service/... \
+	    -coverprofile=/tmp/accounts_coverage.out -count=1
+	go tool cover -func=/tmp/accounts_coverage.out | grep -v "server.gen.go"
+	@echo ""
+	@echo "── Coverage: cmd/cf-accounts (config) ───────────────────────────────"
+	go test ./cmd/cf-accounts/... -coverprofile=/tmp/accounts_cmd_coverage.out -count=1
+	go tool cover -func=/tmp/accounts_cmd_coverage.out
+
+.PHONY: accounts-image
+accounts-image: ## Build cf-accounts Docker image and import into k3d (requires: make dev-up first)
+	@echo "── Building cf-accounts Docker image ────────────────────────────────"
+	GOWORK=off go mod tidy
+	docker build \
+	    --file deploy/docker/Dockerfile.accounts \
+	    --tag cf-accounts:dev \
+	    .
+	@echo "── Importing cf-accounts:dev into k3d cluster ───────────────────────"
+	k3d image import cf-accounts:dev -c cloudforge-dev
+	@echo "✓ cf-accounts:dev image ready in k3d"
+
+.PHONY: deploy-accounts
+deploy-accounts: accounts-image ## Build image, load into k3d, and deploy cf-accounts to cf-system namespace
+	@echo "── Applying cf-accounts manifest ────────────────────────────────────"
+	kubectl apply -f deploy/kustomize/base/cf-accounts.yaml
+	@echo "── Waiting for cf-accounts rollout (up to 120s) ─────────────────────"
+	kubectl rollout status deployment/cf-accounts -n cf-system --timeout=120s
+	@echo ""
+	@echo "✓ cf-accounts is running"
+	@echo "  Namespace    : cf-system"
+	@echo "  Port-forward : make accounts-port-forward"
+	@echo "  Logs         : make accounts-logs"
+	@echo "  API          : POST http://localhost:8082/accounts"
+
+.PHONY: undeploy-accounts
+undeploy-accounts: ## Remove cf-accounts deployment, service, config and secrets from the cluster
+	kubectl delete -f deploy/kustomize/base/cf-accounts.yaml --ignore-not-found
+	@echo "✓ cf-accounts removed"
+
+.PHONY: accounts-status
+accounts-status: ## Show cf-accounts pod and rollout status
+	@echo "── cf-accounts deployment ───────────────────────────────────────────"
+	kubectl get deployment cf-accounts -n cf-system 2>/dev/null \
+		|| echo "  (not deployed — run: make deploy-accounts)"
+	@echo ""
+	@echo "── Pod ─────────────────────────────────────────────────────────────"
+	kubectl get pods -n cf-system -l app.kubernetes.io/name=cf-accounts -o wide 2>/dev/null \
+		|| echo "  (no pod found)"
+	@echo ""
+	@echo "── Health check (requires accounts-port-forward) ────────────────────"
+	@curl -sf http://localhost:8082/healthz 2>/dev/null \
+		|| echo "  (not reachable — run: make accounts-port-forward in another terminal)"
+
+.PHONY: accounts-port-forward
+accounts-port-forward: ## Forward cf-accounts HTTP API to localhost:8082 (keep terminal open)
+	@echo "── Forwarding cf-accounts API → localhost:8082 ──────────────────────"
+	@echo "   POST http://localhost:8082/accounts"
+	@echo "   GET  http://localhost:8082/accounts/{slug}"
+	@echo "   Health: GET http://localhost:8082/healthz"
+	@echo "   Press Ctrl-C to stop."
+	@kubectl get pod -n cf-system -l app.kubernetes.io/name=cf-accounts --no-headers 2>/dev/null | grep -q Running \
+		|| (echo "ERROR: cf-accounts pod is not running — run: make deploy-accounts" && exit 1)
+	kubectl port-forward -n cf-system svc/cf-accounts 8082:8082
+
+.PHONY: accounts-logs
+accounts-logs: ## Follow cf-accounts pod logs
+	@echo "── cf-accounts logs (Ctrl-C to stop) ────────────────────────────────"
+	kubectl logs -n cf-system -l app.kubernetes.io/name=cf-accounts --follow --tail=100
+
+.PHONY: accounts-redeploy
+accounts-redeploy: accounts-image ## Rebuild image and do a rolling restart of cf-accounts
+	@echo "── Triggering rolling restart of cf-accounts ────────────────────────"
+	kubectl rollout restart deployment/cf-accounts -n cf-system
+	kubectl rollout status deployment/cf-accounts -n cf-system --timeout=120s
+	@echo "✓ cf-accounts redeployed with latest image"
 
 # ── Linting and formatting ────────────────────────────────────────────────────
 

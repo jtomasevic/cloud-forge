@@ -5,7 +5,7 @@ package provisioner_test
 // Integration tests for kubeconfig.go.
 //
 // These tests require Docker and start a real OpenBao container via
-// internal/testutil.StartOpenBao(t). They validate:
+// internal/testutil.StartOpenBaoForSuite. They validate:
 //
 //   - Store → Retrieve roundtrip (data fidelity)
 //   - Retrieve for a missing path returns ErrNotFound
@@ -27,6 +27,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 
 	openbao "github.com/openbao/openbao/api/v2"
@@ -36,6 +38,26 @@ import (
 	"github.com/jtomasevic/cloud-forge/internal/provisioner"
 	"github.com/jtomasevic/cloud-forge/internal/testutil"
 )
+
+// sharedClient is the single OpenBao client shared by all tests in this
+// package. Starting one container per test would exceed the CI 2-minute
+// timeout; sharing avoids redundant container lifecycle overhead.
+var sharedClient *openbao.Client
+
+// TestMain starts a single OpenBao container, runs all tests, then tears
+// the container down.
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+
+	client, cleanup, err := testutil.StartOpenBaoForSuite(ctx)
+	if err != nil {
+		log.Fatalf("integration: setup OpenBao: %v", err)
+	}
+	defer cleanup()
+
+	sharedClient = client
+	os.Exit(m.Run())
+}
 
 // sampleKubeconfig is a minimal but structurally valid kubeconfig YAML used
 // across all tests. It does not point to a real cluster.
@@ -60,7 +82,7 @@ users:
 // ── Store + Retrieve ──────────────────────────────────────────────────────────
 
 func TestStore_And_Retrieve_Roundtrip(t *testing.T) {
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	const tenantID = "acme-corp"
@@ -76,7 +98,7 @@ func TestStore_Overwrites_To_New_KV_Version(t *testing.T) {
 	// KV v2 is versioned: each Store creates a new version. Retrieve always
 	// returns the latest version. This validates the rotation pattern: write
 	// the new kubeconfig, verify it is returned, without losing old versions.
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	const tenantID = "rotation-test"
@@ -93,7 +115,7 @@ func TestStore_Overwrites_To_New_KV_Version(t *testing.T) {
 
 func TestStore_MultiTenant_Isolation(t *testing.T) {
 	// Storing kubeconfigs for multiple tenants must not interfere with each other.
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	tenants := map[string]string{
@@ -116,7 +138,7 @@ func TestStore_MultiTenant_Isolation(t *testing.T) {
 // ── Retrieve — not found ──────────────────────────────────────────────────────
 
 func TestRetrieve_ReturnsErrNotFound_For_New_Tenant(t *testing.T) {
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	_, err := provisioner.Retrieve(ctx, client, "never-provisioned")
@@ -127,7 +149,7 @@ func TestRetrieve_ReturnsErrNotFound_For_New_Tenant(t *testing.T) {
 
 func TestRetrieve_ReturnsErrNotFound_After_Revoke(t *testing.T) {
 	// After Revoke, Retrieve must return ErrNotFound, not the old kubeconfig.
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	const tenantID = "deprovisioned-tenant"
@@ -146,7 +168,7 @@ func TestRevoke_Is_Idempotent(t *testing.T) {
 	// Revoking a tenant that was never provisioned must not return an error.
 	// This is critical for deprovisioning workflows that call Revoke in cleanup
 	// sequences even when provisioning failed before Store was called.
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	err := provisioner.Revoke(ctx, client, "tenant-that-was-never-stored")
@@ -155,7 +177,7 @@ func TestRevoke_Is_Idempotent(t *testing.T) {
 
 func TestRevoke_Twice_Is_Idempotent(t *testing.T) {
 	// Revoking the same tenant twice must not fail.
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	const tenantID = "double-revoke-tenant"
@@ -184,7 +206,7 @@ func TestRevoke_Twice_Is_Idempotent(t *testing.T) {
 // This simulates the production model where the provisioner pod authenticates
 // to OpenBao via Kubernetes auth and receives a per-tenant scoped token.
 func TestCrossTenant_PolicyIsolation(t *testing.T) {
-	rootClient, _ := testutil.StartOpenBao(t)
+	rootClient := sharedClient
 	ctx := context.Background()
 
 	const (
@@ -248,7 +270,7 @@ func TestRetrieve_ErrorsWhenKubeconfigFieldMissing(t *testing.T) {
 	// If a secret exists at the expected path but lacks the "kubeconfig" field
 	// (e.g. written manually with the wrong key), Retrieve must return a clear
 	// error rather than an empty string or a panic.
-	client, _ := testutil.StartOpenBao(t)
+	client := sharedClient
 	ctx := context.Background()
 
 	// Write a secret with the correct path but the wrong field name.

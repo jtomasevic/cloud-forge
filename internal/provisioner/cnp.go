@@ -105,7 +105,7 @@ func PlatformIsolationPolicy(namespace string) ([]byte, error) {
 //
 // The returned bytes are ready to be passed to kubectl apply or the Kubernetes
 // client's Apply method.
-func ProvisionerAccessPolicy(namespace string) ([]byte, error) {
+func ProvisionerAccessPolicy(namespace string) ([]byte, error) { //nolint:revive // name intentionally includes package prefix to distinguish from TenantIsolationPolicy at call sites
 	if err := validateNamespace(namespace); err != nil {
 		return nil, err
 	}

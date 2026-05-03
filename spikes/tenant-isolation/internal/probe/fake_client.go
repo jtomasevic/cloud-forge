@@ -35,10 +35,10 @@ type FakeClient struct {
 	ApplyCalls int
 
 	// ── WaitPodReady ────────────────────────────────────────────────────────
-	WaitPodReadyPodName  string
-	WaitPodReadyElapsed  time.Duration
-	WaitPodReadyErr      error
-	WaitPodReadyCalls    int
+	WaitPodReadyPodName string
+	WaitPodReadyElapsed time.Duration
+	WaitPodReadyErr     error
+	WaitPodReadyCalls   int
 
 	// ── DeletePod ───────────────────────────────────────────────────────────
 	DeletePodErr   error

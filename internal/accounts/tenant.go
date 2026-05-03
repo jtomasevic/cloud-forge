@@ -33,15 +33,15 @@ const (
 // Tenant holds the control plane record for a CloudForge tenant.
 // It maps 1:1 to a row in cf.tenants.
 type Tenant struct {
-	TenantID    uuid.UUID
-	Slug        string       // URL-safe lowercase name; also used as the vCluster namespace suffix
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Slug        string
 	DisplayName string
 	Status      TenantStatus
 	PlanID      string
-	PodCIDR     string // e.g. "10.100.1.0/24" — assigned by CIDR allocator
-	SvcCIDR     string // e.g. "10.200.1.0/24"
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	PodCIDR     string
+	SvcCIDR     string
+	TenantID    uuid.UUID
 }
 
 // ErrTenantNotFound is returned by TenantStore.Get when no tenant exists for
@@ -85,10 +85,29 @@ func (s *TenantStore) Create(ctx context.Context, slug, displayName, planID stri
 		UpdatedAt:   now,
 	}
 
-	// LWT insert: rejected if a row with the same tenant_id already exists.
-	// Because tenant_id is a random UUID collision is astronomically unlikely,
-	// but we use IF NOT EXISTS for correctness and to mirror the slug uniqueness
-	// guarantee enforced at the application layer.
+	// Phase 1 – reserve the slug atomically.
+	//
+	// cf.tenants uses tenant_id (UUID) as its sole primary key, so the
+	// base-table LWT cannot enforce slug uniqueness. The companion table
+	// cf.tenant_slugs acts as a slug reservation: the first concurrent caller
+	// wins; subsequent callers with the same slug are rejected here.
+	slugResult := make(map[string]interface{})
+	slugApplied, err := s.sess.Query(`
+		INSERT INTO cf.tenant_slugs (slug) VALUES (?) IF NOT EXISTS`, slug,
+	).WithContext(ctx).MapScanCAS(slugResult)
+	if err != nil {
+		return nil, fmt.Errorf("accounts: reserve slug %q: %w", slug, err)
+	}
+	if !slugApplied {
+		return nil, ErrTenantAlreadyExists
+	}
+
+	// Phase 2 – insert the tenant row.
+	//
+	// gocql v1.7.0 + ScyllaDB v6: ScanCAS() with no dest args fails when the
+	// server returns all row columns (even on a successful apply). MapScanCAS
+	// handles this correctly regardless of how many columns the response carries.
+	casResult := make(map[string]interface{})
 	applied, err := s.sess.Query(`
 		INSERT INTO cf.tenants
 		  (tenant_id, slug, display_name, status, plan_id,
@@ -97,11 +116,18 @@ func (s *TenantStore) Create(ctx context.Context, slug, displayName, planID stri
 		IF NOT EXISTS`,
 		gocql.UUID(id), slug, displayName, string(t.Status), planID,
 		now, now,
-	).WithContext(ctx).ScanCAS()
+	).WithContext(ctx).MapScanCAS(casResult)
 	if err != nil {
+		// Best-effort cleanup: release the slug reservation so this slug is not
+		// permanently blocked by a failed tenant insert.
+		_ = s.sess.Query(`DELETE FROM cf.tenant_slugs WHERE slug = ?`, slug).
+			WithContext(ctx).Exec()
 		return nil, fmt.Errorf("accounts: create tenant %q: %w", slug, err)
 	}
 	if !applied {
+		// UUID collision — astronomically unlikely but handled for correctness.
+		_ = s.sess.Query(`DELETE FROM cf.tenant_slugs WHERE slug = ?`, slug).
+			WithContext(ctx).Exec()
 		return nil, ErrTenantAlreadyExists
 	}
 	return t, nil

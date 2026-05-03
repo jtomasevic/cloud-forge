@@ -46,10 +46,10 @@ func BenchAPIKeyLookup(
 				// first byte arrives (Scan returns after the first row is read).
 				t0 := time.Now()
 				var (
-					keyID      gocql.UUID
-					tenantID   gocql.UUID
-					status     string
-					scopes     string
+					keyID    gocql.UUID
+					tenantID gocql.UUID
+					status   string
+					scopes   string
 				)
 				err := sess.Query(
 					`SELECT key_id, tenant_id, status, scopes

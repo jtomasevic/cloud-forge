@@ -91,7 +91,7 @@ func TestNewRawKeyAndHash_Format(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, strings.HasPrefix(raw, apiKeyPrefix),
-		"raw key must start with %q, got %q", apiKeyPrefix, raw[:min(len(raw), 20)])
+		"raw key must start with %q, got %q", apiKeyPrefix, raw[:minInt(len(raw), 20)])
 
 	// After the prefix the body is hex(32 bytes) = 64 chars.
 	body := strings.TrimPrefix(raw, apiKeyPrefix)
@@ -133,9 +133,9 @@ func TestNewRawKeyAndHash_HashMatchesRawKey(t *testing.T) {
 	assert.Equal(t, expected, hash, "hash returned by newRawKeyAndHash must equal HashAPIKey(rawKey)")
 }
 
-// min returns the smaller of two ints. Used for safe string truncation in
+// minInt returns the smaller of two ints. Used for safe string truncation in
 // error messages.
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

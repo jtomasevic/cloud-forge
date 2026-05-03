@@ -31,16 +31,16 @@ const (
 // never stored here — only the BLAKE2b-256 hash. The raw key is returned
 // exactly once at creation time by the provisioning workflow.
 type APIKey struct {
-	KeyHash     string       // hex(BLAKE2b-256(raw_key)) — the ScyllaDB partition key
-	KeyID       uuid.UUID    // stable identifier for management operations
-	TenantID    uuid.UUID
-	UserID      uuid.UUID    // which user owns this key (system UUID for provisioner-issued keys)
-	DisplayName string
-	Scopes      string       // comma-separated: "provision:write,provision:read"
-	Status      APIKeyStatus
-	ExpiresAt   time.Time    // zero value means never expires
+	ExpiresAt   time.Time
 	LastUsedAt  time.Time
 	CreatedAt   time.Time
+	KeyHash     string
+	DisplayName string
+	Scopes      string
+	Status      APIKeyStatus
+	KeyID       uuid.UUID
+	TenantID    uuid.UUID
+	UserID      uuid.UUID
 }
 
 // ErrAPIKeyNotFound is returned by APIKeyStore.Lookup when the hash does not
@@ -132,15 +132,14 @@ func (s *APIKeyStore) Lookup(ctx context.Context, keyHash string) (*APIKey, erro
 	return &k, nil
 }
 
-// Revoke marks all API keys for a tenant as REVOKED. Called during tenant
-// deprovisioning to ensure that no outstanding key can authenticate after
-// the vCluster is deleted.
+// RevokeByID marks the API key identified by keyID as REVOKED. Called during
+// tenant deprovisioning to ensure that no outstanding key can authenticate
+// after the vCluster is deleted.
 //
 // Important: this operation scans cf.api_keys_by_tenant (if it existed) or
 // loads keys by tenant_id. In this schema api_keys has key_hash as the sole
 // partition key, so revocation requires a secondary lookup. For the VPC slice
-// we revoke by key_id which is known to the deprovisioning workflow. Call
-// RevokeByID for individual keys.
+// we revoke by key_id which is known to the deprovisioning workflow.
 func (s *APIKeyStore) RevokeByID(ctx context.Context, keyID uuid.UUID) error {
 	// We need the key_hash to update the row (partition key). Perform a
 	// full-table scan filtered by key_id is not viable at scale, so the

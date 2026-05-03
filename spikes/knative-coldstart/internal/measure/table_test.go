@@ -148,7 +148,7 @@ func TestPrintTable_AllPassedMessage(t *testing.T) {
 func TestPrintTable_MissingVariant(t *testing.T) {
 	result := BenchmarkResult{
 		StartedAt: time.Now(),
-		Results:   map[Variant]Stats{
+		Results: map[Variant]Stats{
 			// Only minimal — medium and heavy are missing.
 			VariantMinimal: {Variant: VariantMinimal, P95: 1 * time.Second, SampleCount: 3},
 		},

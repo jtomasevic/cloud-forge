@@ -27,6 +27,24 @@
 
 ## 1. Implementation Strategy
 
+### Note: Lightweight Registration (Pre-Keycloak)
+
+A lightweight email+password self-service registration endpoint (`POST /api/v1/register`)
+has been implemented in `cf-accounts` ahead of the full CF-IAM/Keycloak phase.
+This is a deliberate bridge:
+
+- It stores a bcrypt-hashed password and email in a `cf.users` ScyllaDB table.
+- Registration creates a user record, triggers VPC provisioning, and issues an
+  initial API key (shown once) the user can use to poll status and manage their account.
+- It does NOT use Keycloak, OIDC, or JWTs. Session management is deferred to Phase 1.
+- When CF-IAM is built (Task 1.1–1.3), the user table will be migrated to Keycloak
+  and the `cf.users` table deprecated.
+
+This means developers can register, provision, and test the full account lifecycle
+end-to-end without waiting for Phase 1 to complete.
+
+---
+
 ### Guiding Principles for Execution
 
 **Build the backbone before the services.** CF-IAM, CF-ResourceController, and CF-SecretsConfig are not just services — they are the backbone that every other service depends on for authorization, tenant context, and credentials. Any service built before these exist will require a retrofit that is always more expensive than doing it right first.

@@ -24,7 +24,7 @@ type Tool struct {
 // vcluster is required only for Test 5; absence is handled as SKIP in the probe.
 var requiredTools = []Tool{
 	{Binary: "kubectl", BrewFormula: ""},                      // must be installed by the user
-	{Binary: "k3d", BrewFormula: "k3d"},                      // auto-install via brew
+	{Binary: "k3d", BrewFormula: "k3d"},                       // auto-install via brew
 	{Binary: "helm", BrewFormula: "helm"},                     // auto-install via brew
 	{Binary: "cilium", BrewFormula: "cilium-cli"},             // auto-install via brew
 	{Binary: "vcluster", BrewFormula: "loft-sh/tap/vcluster"}, // auto-install via brew

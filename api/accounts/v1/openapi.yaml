@@ -1,0 +1,614 @@
+openapi: "3.0.3"
+
+info:
+  title: CloudForge Accounts API
+  description: |
+    Control plane API for CloudForge account and tenant lifecycle management.
+
+    This service is the single entry point for:
+      - User self-service registration (public)
+      - Provisioning the private network for a registered tenant
+      - Querying account status and provisioning progress
+      - Issuing and revoking tenant API keys
+
+    Flow:
+      1. POST /register (public) — creates user + tenant record, returns initial_api_key.
+      2. POST /accounts/{tenant_slug}/provision (authenticated) — starts VPC provisioning,
+         returns job_id.
+      3. GET /accounts/{tenant_slug} — poll for status=ACTIVE.
+
+    Authentication is via platform API key in the Authorization: Bearer header.
+    API key validation is performed by CF-Router before forwarding here.
+  version: "0.1.0"
+  contact:
+    name: CloudForge Platform Team
+    url: https://github.com/jtomasevic/cloud-forge
+
+servers:
+  - url: /api/v1
+    description: CloudForge Accounts API
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        CloudForge platform API key (`cf_live_...`). CF-Router hashes the key,
+        resolves the calling tenant, and injects X-CF-Tenant-ID before forwarding.
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # ── RegisterRequest ──────────────────────────────────────────────────────
+    RegisterRequest:
+      type: object
+      description: |
+        Self-service registration request. Creates a user record, opens a
+        tenant account, and starts VPC provisioning in one atomic flow.
+
+        `email` is the login username — must be a valid RFC-5322 address.
+        `password` is accepted in plain text over TLS and immediately bcrypt-
+        hashed (cost 12) before storage. The raw password is never logged.
+      required:
+        - email
+        - password
+        - slug
+        - display_name
+        - plan
+      properties:
+        email:
+          type: string
+          format: email
+          description: |
+            Primary login email and username. Must be unique across the platform.
+            Cannot be changed after registration (use account settings, TBD).
+          maxLength: 254
+          example: "alice@acme.com"
+        password:
+          type: string
+          format: password
+          description: |
+            Plain-text password. Minimum 8 characters.
+            Bcrypt-hashed (cost 12) at the service layer — never stored raw.
+          minLength: 8
+          maxLength: 128
+          example: "s3cur3pass!"
+        slug:
+          type: string
+          description: |
+            Unique URL-safe identifier for the tenant account. Used as the
+            Kubernetes namespace suffix and vCluster name. Immutable after
+            creation.
+          minLength: 2
+          maxLength: 63
+          pattern: "^[a-z0-9]([a-z0-9\\-]*[a-z0-9])?$"
+          example: "acme-corp"
+        display_name:
+          type: string
+          description: Human-readable organisation name shown in the UI and logs.
+          minLength: 1
+          maxLength: 128
+          example: "Acme Corporation"
+        plan:
+          type: string
+          description: Billing plan tier controlling resource quotas.
+          enum:
+            - starter
+            - pro
+            - enterprise
+          example: "starter"
+
+    # ── RegisterResponse ─────────────────────────────────────────────────────
+    RegisterResponse:
+      type: object
+      description: |
+        Returned (201 Created) after successful self-service registration.
+
+        `initial_api_key` is shown ONCE in this response and never stored in
+        plain text. The caller MUST persist it to authenticate future requests.
+
+        VPC provisioning is **not** started here. Call
+        POST /accounts/{tenant_slug}/provision (authenticated) after
+        registration to start the network provisioning workflow.
+      required:
+        - user_id
+        - tenant_id
+        - slug
+        - initial_api_key
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: UUID assigned to the newly created user record.
+          example: "01920e4b-0000-7000-a000-000000000099"
+        tenant_id:
+          type: string
+          format: uuid
+          description: UUID assigned to the new tenant account.
+          example: "01920e4b-0000-7000-a000-000000000001"
+        slug:
+          type: string
+          description: The tenant slug as submitted.
+          example: "acme-corp"
+        initial_api_key:
+          type: string
+          description: |
+            Bootstrapped API key. STORE THIS NOW — it will not be shown again.
+            Use as: Authorization: Bearer <initial_api_key>
+          example: "cf_live_a1b2c3d4e5f6..."
+
+    # ── AccountStatus ────────────────────────────────────────────────────────
+    AccountStatus:
+      type: string
+      description: Lifecycle state of a tenant account.
+      enum:
+        - PROVISIONING
+        - ACTIVE
+        - SUSPENDED
+        - DELETED
+      example: "ACTIVE"
+
+    # ── AccountResponse ──────────────────────────────────────────────────────
+    AccountResponse:
+      type: object
+      description: Full account record including network topology when provisioned.
+      required:
+        - tenant_id
+        - slug
+        - display_name
+        - status
+        - plan
+        - created_at
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: Immutable UUID assigned at account creation.
+          example: "01920e4b-0000-7000-a000-000000000001"
+        slug:
+          type: string
+          description: URL-safe tenant identifier.
+          example: "acme-corp"
+        display_name:
+          type: string
+          example: "Acme Corporation"
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        plan:
+          type: string
+          example: "starter"
+        pod_cidr:
+          type: string
+          description: vCluster pod CIDR. Populated once status=ACTIVE.
+          example: "10.100.1.0/24"
+        service_cidr:
+          type: string
+          description: vCluster service CIDR. Populated once status=ACTIVE.
+          example: "10.200.1.0/24"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-05-01T12:00:00Z"
+
+    # ── CreateAccountAccepted ────────────────────────────────────────────────
+    CreateAccountAccepted:
+      type: object
+      description: Returned immediately (202) when network provisioning is accepted.
+      required:
+        - tenant_id
+        - slug
+        - status
+        - job_id
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: UUID of the tenant whose network is being provisioned.
+          example: "01920e4b-0000-7000-a000-000000000001"
+        slug:
+          type: string
+          example: "acme-corp"
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        job_id:
+          type: string
+          format: uuid
+          description: Provisioning job ID. Poll GET /accounts/{slug}/jobs/{job_id}.
+          example: "01920e4b-0000-7000-a000-000000000002"
+
+    # ── DeleteAccountAccepted ────────────────────────────────────────────────
+    DeleteAccountAccepted:
+      type: object
+      description: Returned immediately (202) when account deletion is accepted.
+      required:
+        - slug
+        - status
+        - job_id
+      properties:
+        slug:
+          type: string
+          example: "acme-corp"
+        status:
+          type: string
+          enum:
+            - QUEUED
+          example: "QUEUED"
+        job_id:
+          type: string
+          format: uuid
+          description: Deprovisioning job ID.
+          example: "01920e4b-0000-7000-a000-000000000003"
+
+    # ── IssueKeyRequest ──────────────────────────────────────────────────────
+    IssueKeyRequest:
+      type: object
+      description: Request body for issuing a new API key for a tenant.
+      required:
+        - display_name
+      properties:
+        display_name:
+          type: string
+          description: Human-readable label for the key (e.g. "CI/CD pipeline").
+          minLength: 1
+          maxLength: 128
+          example: "CI/CD pipeline"
+        scopes:
+          type: string
+          description: |
+            Comma-separated permission scopes. Defaults to "provision:read" if omitted.
+          example: "provision:write,provision:read"
+
+    # ── IssueKeyResponse ─────────────────────────────────────────────────────
+    IssueKeyResponse:
+      type: object
+      description: |
+        Response after issuing a new API key. The raw key is returned ONCE
+        in this response and never stored — the caller must persist it.
+      required:
+        - key_id
+        - raw_key
+        - display_name
+        - scopes
+        - status
+        - created_at
+      properties:
+        key_id:
+          type: string
+          format: uuid
+          description: Stable identifier used for revocation.
+          example: "01920e4b-0000-7000-a000-000000000010"
+        raw_key:
+          type: string
+          description: |
+            The raw bearer token. STORE THIS NOW — it cannot be retrieved again.
+            Use as: Authorization: Bearer <raw_key>
+          example: "cf_live_a1b2c3d4e5f6..."
+        display_name:
+          type: string
+          example: "CI/CD pipeline"
+        scopes:
+          type: string
+          example: "provision:write,provision:read"
+        status:
+          type: string
+          enum:
+            - ACTIVE
+          example: "ACTIVE"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-05-01T12:00:00Z"
+
+    # ── ErrorDetail ───────────────────────────────────────────────────────────
+    ErrorDetail:
+      type: object
+      description: Machine-readable error payload on all non-2xx responses.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - BAD_REQUEST
+            - UNPROCESSABLE
+            - NOT_FOUND
+            - CONFLICT
+            - INTERNAL_ERROR
+            - SERVICE_UNAVAILABLE
+          example: "CONFLICT"
+        message:
+          type: string
+          example: "tenant \"acme-corp\" already exists"
+        request_id:
+          type: string
+          example: "01HX5Z4N3V7QWMPXBCDE6GH892"
+
+    # ── ErrorResponse ─────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: Request body or path parameters failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Request was well-formed but failed business-rule validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: A resource with the same identifier already exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected server-side error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  # -------------------------------------------------------------------------
+  # Reusable path parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    TenantSlugParam:
+      name: tenant_slug
+      in: path
+      required: true
+      description: Tenant slug (DNS label, lowercase alphanumeric + hyphens).
+      schema:
+        type: string
+        minLength: 2
+        maxLength: 63
+        pattern: "^[a-z0-9]([a-z0-9\\-]*[a-z0-9])?$"
+        example: "acme-corp"
+    KeyIDParam:
+      name: key_id
+      in: path
+      required: true
+      description: UUID of the API key to operate on.
+      schema:
+        type: string
+        format: uuid
+        example: "01920e4b-0000-7000-a000-000000000010"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ── POST /register ─────────────────────────────────────────────────────────
+  /register:
+    post:
+      operationId: register
+      summary: Self-service user registration
+      description: |
+        Creates the foundational account record: a user identity and a tenant
+        slot. No VPC or private network provisioning is started here.
+
+        This endpoint is **public** — no API key required. It is the entry
+        point for new customers signing up on the CloudForge platform.
+
+        Steps performed:
+        1. Validate email uniqueness (cf.users_by_email MV lookup, LWT insert).
+        2. Reserve slug and create tenant record (PROVISIONING status, LWT insert).
+        3. Hash the password with bcrypt (cost 12) and persist the user record.
+        4. Issue an initial API key (shown ONCE in the response).
+
+        After registration, call POST /accounts/{tenant_slug}/provision
+        (authenticated) to start the VPC provisioning workflow.
+
+        Rate-limiting note: clients should retry with exponential back-off.
+        A future APISIX plugin will enforce request-per-IP limits.
+      tags:
+        - Registration
+      security: []   # public endpoint — no Bearer key required
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: |
+            Registration successful. Tenant account created (PROVISIONING status).
+            Store the initial_api_key — it is shown only once.
+            Next step: POST /accounts/{tenant_slug}/provision to start the network.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Email or slug already registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── POST /accounts/{tenant_slug}/provision ─────────────────────────────────
+  /accounts/{tenant_slug}/provision:
+    parameters:
+      - $ref: "#/components/parameters/TenantSlugParam"
+    post:
+      operationId: provisionNetwork
+      summary: Provision the private network for a tenant account
+      description: |
+        Starts the VPC provisioning workflow for an existing tenant account.
+        The account must have been created first via POST /register.
+
+        Returns 202 Accepted with a `job_id`. The account status transitions
+        PROVISIONING → ACTIVE once the vCluster and network policies are ready.
+        Poll GET /accounts/{tenant_slug} for status=ACTIVE, or use the
+        provisioner API's GET /vpc/jobs/{job_id} for detailed job progress.
+
+        This endpoint requires authentication — only the signed-in tenant user
+        (or an admin) may trigger provisioning.
+      tags:
+        - Accounts
+      responses:
+        "202":
+          description: Network provisioning accepted and VPC workflow started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAccountAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── GET /accounts/{tenant_slug} ────────────────────────────────────────────
+  /accounts/{tenant_slug}:
+    parameters:
+      - $ref: "#/components/parameters/TenantSlugParam"
+    get:
+      operationId: getAccount
+      summary: Get account details
+      description: |
+        Returns the current state of a tenant account including status,
+        plan, and network topology (pod_cidr, service_cidr once ACTIVE).
+      tags:
+        - Accounts
+      responses:
+        "200":
+          description: Account found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    # ── DELETE /accounts/{tenant_slug} ─────────────────────────────────────
+    delete:
+      operationId: deleteAccount
+      summary: Delete a tenant account
+      description: |
+        Initiates the teardown workflow: revokes API keys, removes the
+        vCluster and its namespace, releases CIDRs, marks the tenant DELETED.
+
+        Returns 202 Accepted immediately. Poll the provisioner's
+        GET /vpc/jobs/{job_id} for completion.
+      tags:
+        - Accounts
+      responses:
+        "202":
+          description: Account deletion accepted and deprovisioning started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteAccountAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── POST /accounts/{tenant_slug}/keys ──────────────────────────────────────
+  /accounts/{tenant_slug}/keys:
+    parameters:
+      - $ref: "#/components/parameters/TenantSlugParam"
+    post:
+      operationId: issueKey
+      summary: Issue a new API key for a tenant
+      description: |
+        Generates a new API key for the tenant. The raw key is returned ONCE
+        in this response — it is never stored in plain text. The caller MUST
+        persist it immediately.
+
+        The tenant must be in ACTIVE status before keys can be issued.
+      tags:
+        - Keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IssueKeyRequest"
+      responses:
+        "201":
+          description: API key issued. Store the raw_key now — it will not be shown again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssueKeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── DELETE /accounts/{tenant_slug}/keys/{key_id} ───────────────────────────
+  /accounts/{tenant_slug}/keys/{key_id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantSlugParam"
+      - $ref: "#/components/parameters/KeyIDParam"
+    delete:
+      operationId: revokeKey
+      summary: Revoke a tenant API key
+      description: |
+        Permanently revokes the API key identified by key_id. The key is
+        marked REVOKED in ScyllaDB and rejected by CF-Router immediately
+        (QUORUM read guarantee).
+
+        Revocation is idempotent: revoking an already-revoked key returns 204.
+      tags:
+        - Keys
+      responses:
+        "204":
+          description: Key revoked (or was already revoked).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"

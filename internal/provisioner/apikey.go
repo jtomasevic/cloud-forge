@@ -31,18 +31,9 @@ var ProvisionerUserID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 // The RawKey is returned exactly once to the caller and must not be logged.
 // Only KeyHash is stored in ScyllaDB.
 type GeneratedAPIKey struct {
-	// RawKey is the full bearer token to return to the tenant.
-	// Format: "cf_live_" + hex(32 random bytes).
-	// MUST NOT be stored anywhere after it is returned to the tenant.
-	RawKey string
-
-	// KeyHash is the hex-encoded BLAKE2b-256 digest of RawKey.
-	// This is the value stored in cf.api_keys.key_hash and used by CF-Router
-	// to validate incoming bearer tokens.
+	Record  *accounts.APIKey
+	RawKey  string
 	KeyHash string
-
-	// Record is the metadata row that was written to cf.api_keys.
-	Record *accounts.APIKey
 }
 
 // APIKeyStorer is the narrow interface that GenerateAPIKey needs to persist a

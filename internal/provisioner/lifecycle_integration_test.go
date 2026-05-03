@@ -369,4 +369,3 @@ func TestLifecycle_DeprovisioningAfterPartialFailure(t *testing.T) {
 	assert.Equal(t, retryKubeconfig, got,
 		"retry: retrieved kubeconfig must match what was stored on the second attempt")
 }
-

@@ -1,0 +1,180 @@
+# CloudForge Accounts — Kubernetes Deployment and supporting resources.
+#
+# cf-accounts is the CloudForge control plane REST API service for:
+#   • Creating and managing tenant accounts
+#   • Triggering and tracking VPC provisioning via the embedded provisioner library
+#   • Issuing and revoking tenant API keys
+#
+# Architecture:
+#   docs/CF-VPC-Service-Proposal.md    — VPC design
+#   docs/4-Tenant-Isolation-and-Provisioning.md — broader context
+#   docs/general/webappsec.md          — layered service design guide
+#
+# Endpoints:
+#   POST   /accounts                        → 202 Accepted { tenant_id, job_id }
+#   GET    /accounts/{tenant_slug}          → { tenant_id, status, cidr, ... }
+#   DELETE /accounts/{tenant_slug}          → 202 Accepted { job_id }
+#   POST   /accounts/{tenant_slug}/keys     → 201 Created { raw_key }
+#   DELETE /accounts/{tenant_slug}/keys/id  → 204 No Content
+#
+# Image:
+#   Built locally via: make accounts-image
+#   Loaded into k3d via: k3d image import cf-accounts:dev -c cloudforge-dev
+#   imagePullPolicy: Never ensures k3d uses the locally loaded image.
+---
+# ConfigMap carries non-secret runtime configuration for cf-accounts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cf-accounts-config
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-accounts
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: accounts
+data:
+  SCYLLA_HOSTS: "cloudforge-scylla-client.cf-data.svc.cluster.local"
+  SCYLLA_PORT: "9042"
+  SCYLLA_USER: "cloudforge_svc"
+  OPENBAO_ADDR: "http://openbao.cf-security.svc.cluster.local:8200"
+  LISTEN_ADDR: ":8082"
+---
+# Secret carries sensitive configuration. In production use External Secrets
+# Operator backed by OpenBao itself.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cf-accounts-secrets
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-accounts
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: accounts
+    cloudforge.io/dev-only: "true"
+  annotations:
+    cloudforge.io/description: >
+      DEV ONLY — static credentials for ScyllaDB and OpenBao.
+      In staging/production, use External Secrets Operator + OpenBao.
+type: Opaque
+stringData:
+  scylla-password: "cf-dev-secret-change-in-prod"
+  openbao-token: "dev-root-token"
+---
+# Deployment — single replica in dev; use replicas + PDB in production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cf-accounts
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-accounts
+    app.kubernetes.io/version: dev
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: accounts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cf-accounts
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cf-accounts
+        app.kubernetes.io/part-of: cloudforge
+        cloudforge.io/component: accounts
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: cf-system
+      # cf-accounts embeds the provisioner library which shells out to kubectl
+      # and vcluster — service account token is required.
+      automountServiceAccountToken: true
+      containers:
+        - name: cf-accounts
+          image: cf-accounts:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8082
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: cf-accounts-config
+          env:
+            - name: SCYLLA_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: cf-accounts-secrets
+                  key: scylla-password
+            - name: OPENBAO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cf-accounts-secrets
+                  key: openbao-token
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+---
+# Service exposes the accounts HTTP API within the cluster.
+# External access via: kubectl port-forward or make accounts-port-forward
+apiVersion: v1
+kind: Service
+metadata:
+  name: cf-accounts
+  namespace: cf-system
+  labels:
+    app.kubernetes.io/name: cf-accounts
+    app.kubernetes.io/part-of: cloudforge
+    cloudforge.io/component: accounts
+spec:
+  selector:
+    app.kubernetes.io/name: cf-accounts
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  type: ClusterIP

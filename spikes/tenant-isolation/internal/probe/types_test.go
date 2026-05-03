@@ -132,8 +132,8 @@ func TestParseMemMB(t *testing.T) {
 		{"256Mi", 256},
 		{"1Gi", 1024},
 		{"2Gi", 2048},
-		{"512Ki", 0},   // rounds down below 1 MiB
-		{"1024Ki", 1},  // exactly 1 MiB
+		{"512Ki", 0},  // rounds down below 1 MiB
+		{"1024Ki", 1}, // exactly 1 MiB
 		{"500M", 500},
 		{"1G", 1024},
 		{"", 0},

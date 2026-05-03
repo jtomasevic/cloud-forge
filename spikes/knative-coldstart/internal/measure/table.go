@@ -34,10 +34,10 @@ func printHeader(w io.Writer, result BenchmarkResult) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "╔══════════════════════════════════════════════════════════════════════════════════════╗")
 	fmt.Fprintln(w, "║  CloudForge — Knative Scale-to-Zero Cold Start Benchmark                            ║")
-	fmt.Fprintf(w,  "║  Cluster : cloudforge-dev (k3d)    Knative Serving %-7s   net-kourier          ║\n", knVer)
-	fmt.Fprintf(w,  "║  Platform: %-44s Started: %-18s  ║\n", result.Platform, ts)
+	fmt.Fprintf(w, "║  Cluster : cloudforge-dev (k3d)    Knative Serving %-7s   net-kourier          ║\n", knVer)
+	fmt.Fprintf(w, "║  Platform: %-44s Started: %-18s  ║\n", result.Platform, ts)
 	fmt.Fprintln(w, "╠══════════════╦══════════╦══════════╦═════════╦═════════╦═════════╦═════════╦════════╣")
-	fmt.Fprintf(w,  "║ %-12s ║ %-8s ║ %-8s ║ %-7s ║ %-7s ║ %-7s ║ %-7s ║ %-6s ║\n",
+	fmt.Fprintf(w, "║ %-12s ║ %-8s ║ %-8s ║ %-7s ║ %-7s ║ %-7s ║ %-7s ║ %-6s ║\n",
 		"Variant", "Image", "p50", "p75", "p95", "p99", "min", "max")
 	fmt.Fprintln(w, "╠══════════════╬══════════╬══════════╬═════════╬═════════╬═════════╬═════════╬════════╣")
 }

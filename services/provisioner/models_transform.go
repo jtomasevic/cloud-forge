@@ -7,11 +7,11 @@ import (
 
 // ToServiceProvisionParams converts the REST ProvisionRequest into the
 // service-layer ProvisionParams. No REST types cross into the service layer.
+// Note: DisplayName and Plan are no longer passed to the workflow — the
+// provisioner looks up the existing tenant record from ScyllaDB.
 func (r ProvisionRequest) ToServiceProvisionParams() svc.ProvisionParams {
 	return svc.ProvisionParams{
-		TenantID:    r.TenantID,
-		DisplayName: r.DisplayName,
-		Plan:        svc.Plan(r.Plan),
+		TenantSlug: r.TenantID,
 	}
 }
 
@@ -28,7 +28,7 @@ func ToGeneratedJobResponse(j svc.JobResult) generated.JobResponse {
 	}
 	if j.VPCResult != nil {
 		apiKey := j.VPCResult.APIKey
-		apiKeyID := j.VPCResult.APIKeyID // openapi_types.UUID = uuid.UUID
+		apiKeyID := j.VPCResult.APIKeyID
 		resp.ApiKey = &apiKey
 		resp.ApiKeyId = &apiKeyID
 		resp.VpcInfo = &generated.VPCInfo{

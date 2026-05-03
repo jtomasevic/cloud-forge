@@ -1,0 +1,58 @@
+# deploy/docker/Dockerfile.accounts
+#
+# Dockerfile for cf-accounts — the CloudForge control plane accounts API.
+#
+# cf-accounts is a pure HTTP/ScyllaDB/OpenBao service. It does not shell out
+# to kubectl or vcluster (the provisioner library it embeds does those calls
+# from the provisioner's own container). Therefore this image is smaller than
+# Dockerfile.provisioner — it uses distroless rather than alpine.
+#
+# GOWORK=off: build only from the root go.mod, ignoring spike sub-modules that
+# are not present in the Docker build context.
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM golang:1.26-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /src
+
+# GOWORK=off: spike sub-modules referenced by go.work are absent from the
+# Docker build context. Build using only the root go.mod.
+ENV GOWORK=off
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build \
+      -trimpath \
+      -ldflags="-s -w \
+        -X main.version=${VERSION} \
+        -X main.commit=${COMMIT} \
+        -X main.date=${BUILD_DATE}" \
+      -o /bin/cf-accounts \
+      ./cmd/cf-accounts
+
+# ── Stage 2: Minimal runtime ──────────────────────────────────────────────────
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /bin/cf-accounts /cf-accounts
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.title="cloudforge-cf-accounts"
+LABEL org.opencontainers.image.source="https://github.com/jtomasevic/cloud-forge"
+
+ENTRYPOINT ["/cf-accounts"]

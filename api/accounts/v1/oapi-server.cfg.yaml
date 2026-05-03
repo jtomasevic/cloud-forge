@@ -1,0 +1,19 @@
+# api/accounts/v1/oapi-server.cfg.yaml
+#
+# oapi-codegen configuration for the CloudForge Accounts API server stubs.
+# Uses std-http to emit a pure net/http handler — no third-party router.
+#
+# Regenerate with:
+#   make gen-api SERVICE=accounts
+package: generated
+
+generate:
+  std-http-server: true
+  strict-server: true
+  models: true
+  embedded-spec: true
+
+output: ../../../services/accounts/generated/server.gen.go
+
+output-options:
+  skip-prune: false

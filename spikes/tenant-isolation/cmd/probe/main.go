@@ -1,11 +1,11 @@
 // Command probe is the CLI entry point for the vCluster tenant isolation spike.
 //
 // It performs the full validation sequence:
-//   1. Checks required tools (kubectl, vcluster, helm, k3d).
-//   2. Creates two tenant vClusters (tenant-a and tenant-b) on the existing k3d cluster.
-//   3. Runs all six isolation tests defined in §11.3 of docs/3-Introduce-CF-VPC.md.
-//   4. Prints a formatted results table to stdout.
-//   5. Exits with code 0 if all tests pass/skip, code 1 if any test fails.
+//  1. Checks required tools (kubectl, vcluster, helm, k3d).
+//  2. Creates two tenant vClusters (tenant-a and tenant-b) on the existing k3d cluster.
+//  3. Runs all six isolation tests defined in §11.3 of docs/3-Introduce-CF-VPC.md.
+//  4. Prints a formatted results table to stdout.
+//  5. Exits with code 0 if all tests pass/skip, code 1 if any test fails.
 //
 // Usage:
 //
@@ -43,16 +43,16 @@ func main() {
 
 func run() int {
 	// ── Flags ─────────────────────────────────────────────────────────────
-	kubeconfigFlag  := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "host-cluster kubeconfig path")
-	tenantA         := flag.String("tenant-a", "tenant-a", "name of the first vCluster (tenant-A)")
-	tenantB         := flag.String("tenant-b", "tenant-b", "name of the second vCluster (tenant-B)")
-	kcDir           := flag.String("kubeconfig-dir", "kubeconfigs", "directory for per-vCluster kubeconfigs")
-	speedSamples    := flag.Int("speed-samples", 3, "number of NATS provisioning cycles")
-	overheadWait    := flag.Duration("overhead-wait", 0, "stabilization wait before overhead measurement (e.g. 2m); 0 = disabled")
+	kubeconfigFlag := flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "host-cluster kubeconfig path")
+	tenantA := flag.String("tenant-a", "tenant-a", "name of the first vCluster (tenant-A)")
+	tenantB := flag.String("tenant-b", "tenant-b", "name of the second vCluster (tenant-B)")
+	kcDir := flag.String("kubeconfig-dir", "kubeconfigs", "directory for per-vCluster kubeconfigs")
+	speedSamples := flag.Int("speed-samples", 3, "number of NATS provisioning cycles")
+	overheadWait := flag.Duration("overhead-wait", 0, "stabilization wait before overhead measurement (e.g. 2m); 0 = disabled")
 	overheadInterval := flag.Duration("overhead-interval", 0, "interval between overhead CPU/RAM samples (e.g. 30s); 0 = no pause")
 	overheadSamples := flag.Int("overhead-samples", 3, "number of overhead CPU/RAM snapshots to collect")
-	skipCreate      := flag.Bool("skip-create", false, "skip vCluster creation (use existing)")
-	verbose         := flag.Bool("verbose", false, "print per-test metrics and sizing table after results")
+	skipCreate := flag.Bool("skip-create", false, "skip vCluster creation (use existing)")
+	verbose := flag.Bool("verbose", false, "print per-test metrics and sizing table after results")
 	flag.Parse()
 
 	// ── Logger ────────────────────────────────────────────────────────────

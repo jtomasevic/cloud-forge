@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -64,4 +65,25 @@ func TestDefaultConfig_Values(t *testing.T) {
 	assert.Equal(t, 19042, cfg.Port, "dev port should be 19042 (port-forwarded)")
 	assert.Greater(t, cfg.ConnectTimeout.Milliseconds(), int64(0))
 	assert.Greater(t, cfg.QueryTimeout.Milliseconds(), int64(0))
+}
+
+// TestNewSession_WithAuthentication_ReturnsError exercises the cfg.Username != ""
+// branch in NewSession that sets up the PasswordAuthenticator on the cluster.
+// The connection to Port 1 will always fail; the test merely verifies that:
+//  1. The authenticator code path is traversed (no panic).
+//  2. The error is propagated correctly.
+func TestNewSession_WithAuthentication_ReturnsError(t *testing.T) {
+	cfg := Config{
+		Hosts:          []string{"127.0.0.1"},
+		Port:           1, // connection refused — no real ScyllaDB needed
+		ConnectTimeout: 200 * time.Millisecond,
+		QueryTimeout:   200 * time.Millisecond,
+		Username:       "cfuser", // triggers the cfg.Username != "" branch
+		Password:       "cfpass",
+	}
+
+	_, err := NewSession(&cfg)
+
+	assert.Error(t, err, "NewSession must fail when the host is unreachable")
+	// The authenticator branch was executed if we reached this point without panic.
 }

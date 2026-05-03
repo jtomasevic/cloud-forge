@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/google/uuid"
+
 	"github.com/jtomasevic/cloud-forge/internal/accounts"
 )
 
@@ -30,12 +31,12 @@ func ToJobResultFromAccountsJob(j *accounts.ProvisioningJob) JobResult {
 // into a VPCProvisionResult. Returns nil on any parse error.
 func parseVPCResult(blob string) *VPCProvisionResult {
 	var raw struct {
-		APIKey   string    `json:"api_key"`
-		APIKeyID uuid.UUID `json:"api_key_id"`
-		VPCInfo  struct {
+		VPCInfo struct {
 			PodCIDR string `json:"pod_cidr"`
 			SvcCIDR string `json:"service_cidr"`
 		} `json:"vpc_info"`
+		APIKey   string    `json:"api_key"`
+		APIKeyID uuid.UUID `json:"api_key_id"`
 	}
 	if err := json.Unmarshal([]byte(blob), &raw); err != nil {
 		return nil
