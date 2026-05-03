@@ -12,10 +12,11 @@ import (
 // appConfig holds all runtime configuration for cf-accounts.
 // Values are sourced exclusively from environment variables via configFromEnv.
 type appConfig struct {
-	OpenBaoAddr  string
-	OpenBaoToken string
-	ListenAddr   string
-	Scylla       accounts.Config
+	OpenBaoAddr    string
+	OpenBaoToken   string
+	ListenAddr     string
+	DevCORSOrigins []string
+	Scylla         accounts.Config
 }
 
 // configFromEnv reads all configuration from environment variables.
@@ -57,6 +58,15 @@ func configFromEnv() (appConfig, error) {
 		listenAddr = ":8082"
 	}
 
+	var corsOrigins []string
+	if raw := os.Getenv("DEV_CORS_ORIGINS"); raw != "" {
+		for _, o := range strings.Split(raw, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				corsOrigins = append(corsOrigins, o)
+			}
+		}
+	}
+
 	return appConfig{
 		Scylla: accounts.Config{
 			Hosts:          strings.Split(hosts, ","),
@@ -66,8 +76,9 @@ func configFromEnv() (appConfig, error) {
 			ConnectTimeout: 10 * time.Second,
 			QueryTimeout:   5 * time.Second,
 		},
-		OpenBaoAddr:  baoAddr,
-		OpenBaoToken: baoToken,
-		ListenAddr:   listenAddr,
+		OpenBaoAddr:    baoAddr,
+		OpenBaoToken:   baoToken,
+		ListenAddr:     listenAddr,
+		DevCORSOrigins: corsOrigins,
 	}, nil
 }

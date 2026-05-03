@@ -61,6 +61,25 @@ func (ms Middlewares) Apply(h http.Handler) http.Handler {
 	return h
 }
 
+// ChainWithCORS is like [Chain] but prepends a [CORS] middleware as the
+// outermost layer. Use this in development when DEV_CORS_ORIGINS is set so
+// that the browser's preflight OPTIONS request is handled before any other
+// middleware runs.
+//
+// Pass an empty slice (or nil) to skip CORS — equivalent to calling [Chain].
+func ChainWithCORS(
+	corsOrigins []string,
+	logger *slog.Logger,
+	registry *prometheus.Registry,
+	svcName string,
+) Middlewares {
+	base := Chain(logger, registry, svcName)
+	if len(corsOrigins) == 0 {
+		return base
+	}
+	return append(Middlewares{CORS(corsOrigins)}, base...)
+}
+
 // Chain returns a [Middlewares] slice with all standard CloudForge middlewares
 // pre-wired in the correct execution order.
 //

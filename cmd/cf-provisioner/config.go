@@ -12,10 +12,11 @@ import (
 // appConfig holds all runtime configuration for cf-provisioner.
 // Values are sourced exclusively from environment variables via configFromEnv.
 type appConfig struct {
-	OpenBaoAddr  string
-	OpenBaoToken string
-	ListenAddr   string
-	Scylla       accounts.Config
+	OpenBaoAddr    string
+	OpenBaoToken   string
+	ListenAddr     string
+	DevCORSOrigins []string
+	Scylla         accounts.Config
 }
 
 // configFromEnv reads all configuration from environment variables.
@@ -29,7 +30,7 @@ type appConfig struct {
 //	SCYLLA_PASS       ScyllaDB password (optional)
 //	OPENBAO_ADDR      OpenBao API address             (default: http://localhost:8200)
 //	OPENBAO_TOKEN     OpenBao root or provisioner token (default: dev-root-token)
-//	LISTEN_ADDR       HTTP bind address               (default: :8080)
+//	LISTEN_ADDR       HTTP bind address               (default: :8084)
 func configFromEnv() (appConfig, error) {
 	hosts := os.Getenv("SCYLLA_HOSTS")
 	if hosts == "" {
@@ -54,7 +55,16 @@ func configFromEnv() (appConfig, error) {
 
 	listenAddr := os.Getenv("LISTEN_ADDR")
 	if listenAddr == "" {
-		listenAddr = ":8080"
+		listenAddr = ":8084"
+	}
+
+	var corsOrigins []string
+	if raw := os.Getenv("DEV_CORS_ORIGINS"); raw != "" {
+		for _, o := range strings.Split(raw, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				corsOrigins = append(corsOrigins, o)
+			}
+		}
 	}
 
 	return appConfig{
@@ -69,5 +79,6 @@ func configFromEnv() (appConfig, error) {
 			QueryTimeout:   5 * time.Second,
 			Port:           port,
 		},
+		DevCORSOrigins: corsOrigins,
 	}, nil
 }

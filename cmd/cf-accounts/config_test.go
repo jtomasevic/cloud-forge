@@ -78,6 +78,38 @@ func TestConfigFromEnv_InvalidPort(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnv_DEVCORSOrigins(t *testing.T) {
+	unsetAll(t)
+	t.Setenv("DEV_CORS_ORIGINS", "http://localhost:3000, http://localhost:8096 , ")
+
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.DevCORSOrigins) != 2 {
+		t.Errorf("DevCORSOrigins: got %v, want 2 entries", cfg.DevCORSOrigins)
+	}
+	if cfg.DevCORSOrigins[0] != "http://localhost:3000" {
+		t.Errorf("DevCORSOrigins[0]: got %q", cfg.DevCORSOrigins[0])
+	}
+	if cfg.DevCORSOrigins[1] != "http://localhost:8096" {
+		t.Errorf("DevCORSOrigins[1]: got %q", cfg.DevCORSOrigins[1])
+	}
+}
+
+func TestConfigFromEnv_NoCORSOrigins(t *testing.T) {
+	unsetAll(t)
+	// DEV_CORS_ORIGINS not set — DevCORSOrigins must be nil/empty.
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.DevCORSOrigins) != 0 {
+		t.Errorf("DevCORSOrigins: got %v, want empty", cfg.DevCORSOrigins)
+	}
+}
+
 // unsetAll removes all env vars that configFromEnv reads so that defaults kick in.
 func unsetAll(t *testing.T) {
 	t.Helper()

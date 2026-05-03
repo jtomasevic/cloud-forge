@@ -79,7 +79,7 @@ func Wire(_ context.Context, cfg *appConfig, log *slog.Logger) (*App, error) {
 	}
 	baoClient.SetToken(cfg.OpenBaoToken) //nolint:gosec // token is a dev default read from env; not a hardcoded secret
 
-	return assembleApp(sess, baoClient, closeSession, log), nil
+	return assembleApp(sess, baoClient, closeSession, log, cfg.DevCORSOrigins), nil
 }
 
 // assembleApp wires stores, services, and the HTTP handler from already-opened
@@ -91,6 +91,7 @@ func assembleApp(
 	baoClient *openbao.Client,
 	closeSession func(),
 	log *slog.Logger,
+	corsOrigins []string,
 ) *App {
 	tenants := accounts.NewTenantStore(sess)
 	users := accounts.NewUserStore(sess)
@@ -117,7 +118,7 @@ func assembleApp(
 	// REST layer
 	reg := prometheus.NewRegistry()
 	handler := accountsapi.NewHandler(svc, log)
-	router := accountsapi.NewRouter(handler, log, reg, "accounts_svc")
+	router := accountsapi.NewRouter(handler, log, reg, "accounts_svc", corsOrigins)
 
 	return &App{
 		Router:   router,

@@ -32,8 +32,10 @@ package provisioner
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -42,28 +44,54 @@ import (
 	"github.com/jtomasevic/cloud-forge/services/provisioner/generated"
 )
 
+// swaggerUIHTML is the single-page Swagger UI template. The two %s placeholders
+// are the page title and the URL of the OpenAPI spec respectively.
+const swaggerUIHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>%s</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui.css"/>
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-bundle.js"></script>
+<script>
+  SwaggerUIBundle({
+    url: "%s",
+    dom_id: "#swagger-ui",
+    presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+    layout: "BaseLayout",
+    deepLinking: true,
+  });
+</script>
+</body>
+</html>`
+
 // NewRouter builds the provisioner HTTP router.
 //
 // It wires the generated StrictServerInterface adapter to a plain
 // [http.ServeMux], wraps the mux with the shared CloudForge middleware chain,
 // and returns the fully composed [http.Handler] ready to be served.
 //
+// corsOrigins is the list of origins to allow for CORS (dev only). Pass nil
+// to disable CORS headers (production default).
+//
 // Parameters:
-//   - h       — the Handler implementation of generated.StrictServerInterface
-//   - logger  — the service-level structured logger
-//   - reg     — the Prometheus registry for this service instance
-//   - svcName — Prometheus namespace prefix (e.g. "provisioner_svc")
+//   - h           — the Handler implementation of generated.StrictServerInterface
+//   - logger      — the service-level structured logger
+//   - reg         — the Prometheus registry for this service instance
+//   - svcName     — Prometheus namespace prefix (e.g. "provisioner_svc")
+//   - corsOrigins — dev-only CORS allowed origins; nil disables CORS
 func NewRouter(
 	h *Handler,
 	logger *slog.Logger,
 	reg *prometheus.Registry,
 	svcName string,
+	corsOrigins []string,
 ) http.Handler {
 	// ── 1. Create the generated mux ─────────────────────────────────────────
-	// HandlerWithOptions registers every operation on a *http.ServeMux using
-	// Go 1.22 METHOD /path/{param} patterns. ErrorHandlerFunc fires when
-	// oapi-codegen cannot unmarshal or validate the request before it reaches
-	// the handler — we translate that into the platform error envelope.
 	mux := generated.HandlerWithOptions(
 		generated.NewStrictHandler(h, nil),
 		generated.StdHTTPServerOptions{
@@ -71,23 +99,36 @@ func NewRouter(
 		},
 	)
 
-	// ── 2. Add the /healthz liveness/readiness probe ────────────────────────
-	// The Kubernetes Deployment's readinessProbe and livenessProbe both hit
-	// GET /healthz.  We handle it on a plain ServeMux before applying the
-	// middleware chain so it is lightweight and never counted in business metrics.
+	// ── 2. Top-level mux: healthz + OpenAPI spec + Swagger UI + API routes ───
 	top := http.NewServeMux()
+
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	// Fall through all other paths to the generated API mux.
+
+	// Serve the raw OpenAPI YAML spec — consumed by Swagger UI and API clients.
+	top.HandleFunc("GET /api/v1/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
+		spec, err := os.ReadFile("api/provisioner/v1/openapi.yaml")
+		if err != nil {
+			http.Error(w, "OpenAPI spec not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml")
+		_, _ = w.Write(spec)
+	})
+
+	// Serve a Swagger UI page that loads the spec from the endpoint above.
+	top.HandleFunc("GET /api/v1/docs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, swaggerUIHTML, "CloudForge Provisioner API", "/api/v1/openapi.yaml")
+	})
+
 	top.Handle("/", mux)
 
-	// ── 3. Build and apply the middleware chain ──────────────────────────────
-	chain := middleware.Chain(logger, reg, svcName)
-
-	// Register /metrics on the registry; actual scrape endpoint is wired in main.
+	// ── 3. Build and apply the middleware chain (with optional dev CORS) ─────
+	chain := middleware.ChainWithCORS(corsOrigins, logger, reg, svcName)
 	_ = metrics.Handler(reg)
 
 	return chain.Apply(top)
